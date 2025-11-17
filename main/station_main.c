@@ -64,7 +64,7 @@ static const char *TAG = "wifi station";
 static int s_retry_num = 0;
 
 /* Global variable indicating WiFi connection status */
-static bool wifi_connected = false;
+static volatile bool wifi_connected = false;
 
 /* Task handle for LED blinking */
 static TaskHandle_t led_task_handle = NULL;
