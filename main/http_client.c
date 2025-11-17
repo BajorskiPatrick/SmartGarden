@@ -1,7 +1,3 @@
-/* HTTP Client Implementation
- * Pobieranie stron WWW przez HTTP
- */
-
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -17,7 +13,6 @@
 static const char *TAG = "http_client";
 static bool *wifi_status_ptr = NULL;
 
-/* Buffer for receiving HTTP response */
 #define HTTP_RECV_BUFFER_SIZE 1024
 
 /**
@@ -97,8 +92,8 @@ void http_get_request(const char *host, int port, const char *path)
             ESP_LOGI(TAG, "Connection closed by server");
             break;
         } else {
-            recv_buf[received] = 0; // Null-terminate
-            printf("%s", recv_buf);  // Print to console
+            recv_buf[received] = 0;
+            printf("%s", recv_buf);
             total_received += received;
         }
     }
@@ -115,11 +110,10 @@ void http_get_request(const char *host, int port, const char *path)
  */
 static void http_client_task(void *pvParameters)
 {
-    /* Configuration - change these values */
     const char *HOST = "example.com";
     const int PORT = 80;
     const char *PATH = "/";
-    const int REQUEST_INTERVAL_SEC = 30;  // Request every 30 seconds
+    const int REQUEST_INTERVAL_SEC = 30;
     
     ESP_LOGI(TAG, "HTTP client task started");
     
@@ -134,7 +128,7 @@ static void http_client_task(void *pvParameters)
             vTaskDelay((REQUEST_INTERVAL_SEC * 1000) / portTICK_PERIOD_MS);
         } else {
             ESP_LOGI(TAG, "WiFi not connected, waiting...");
-            vTaskDelay(5000 / portTICK_PERIOD_MS);  // Check every 5 seconds
+            vTaskDelay(5000 / portTICK_PERIOD_MS);
         }
     }
 }

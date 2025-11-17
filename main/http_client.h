@@ -1,7 +1,3 @@
-/* HTTP Client Header
- * Funkcje do pobierania stron WWW przez HTTP
- */
-
 #ifndef HTTP_CLIENT_H
 #define HTTP_CLIENT_H
 
@@ -23,4 +19,4 @@ void http_client_init(bool *wifi_connected_ptr);
  */
 void http_get_request(const char *host, int port, const char *path);
 
-#endif // HTTP_CLIENT_H
+#endif

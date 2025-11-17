@@ -16,13 +16,13 @@
 
 /* GPIO pin for LED indicator */
 #ifndef CONFIG_BLINK_GPIO
-#define LED_GPIO_PIN 2  // Default GPIO for built-in LED (ESP32 DevKit)
+#define LED_GPIO_PIN 2
 #else
 #define LED_GPIO_PIN CONFIG_BLINK_GPIO
 #endif
 
-#define SMARTGARDEN_WIFI_SSID CONFIG_ESP_WIFI_SSID
-#define SMARTGARDEN_WIFI_PASS CONFIG_ESP_WIFI_PASSWORD
+#define SMARTGARDEN_WIFI_SSID "Redmi Note 10 Pro"
+#define SMARTGARDEN_WIFI_PASS "banan111"
 #define SMARTGARDEN_MAXIMUM_RETRY  CONFIG_ESP_MAXIMUM_RETRY
 
 #if CONFIG_ESP_STATION_EXAMPLE_WPA3_SAE_PWE_HUNT_AND_PECK
@@ -56,9 +56,6 @@
 /* FreeRTOS event group to signal when we are connected*/
 static EventGroupHandle_t s_wifi_event_group;
 
-/* The event group allows multiple bits for each event, but we only care about two events:
- * - we are connected to the AP with an IP
- * - we failed to connect after the maximum amount of retries */
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
@@ -159,11 +156,6 @@ void wifi_init_sta(void)
         .sta = {
             .ssid = SMARTGARDEN_WIFI_SSID,
             .password = SMARTGARDEN_WIFI_PASS,
-            /* Authmode threshold resets to WPA2 as default if password matches WPA2 standards (password len => 8).
-             * If you want to connect the device to deprecated WEP/WPA networks, set the threshold value
-             * to WIFI_AUTH_WEP/WIFI_AUTH_WPA_PSK and set the password with length and format matching to
-             * WIFI_AUTH_WEP/WIFI_AUTH_WPA_PSK standards.
-             */
             .threshold.authmode = ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD,
             .sae_pwe_h2e = ESP_WIFI_SAE_MODE,
             .sae_h2e_identifier = SMARTGARDEN_H2E_IDENTIFIER,
@@ -189,8 +181,8 @@ void app_main(void)
     /* Initialize LED GPIO */
     led_init();
 
+    /* Set WiFi module log level to maximum configured level */
     if (CONFIG_LOG_MAXIMUM_LEVEL > CONFIG_LOG_DEFAULT_LEVEL) {
-        /* Set WiFi module log level to maximum configured level */
         esp_log_level_set("wifi", CONFIG_LOG_MAXIMUM_LEVEL);
     }
 
