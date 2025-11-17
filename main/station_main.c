@@ -21,19 +21,19 @@
 #define LED_GPIO_PIN CONFIG_BLINK_GPIO
 #endif
 
-#define EXAMPLE_ESP_WIFI_SSID "Redmi Note 10 Pro"
-#define EXAMPLE_ESP_WIFI_PASS "banan111"
-#define EXAMPLE_ESP_MAXIMUM_RETRY  CONFIG_ESP_MAXIMUM_RETRY
+#define SMARTGARDEN_WIFI_SSID CONFIG_ESP_WIFI_SSID
+#define SMARTGARDEN_WIFI_PASS CONFIG_ESP_WIFI_PASSWORD
+#define SMARTGARDEN_MAXIMUM_RETRY  CONFIG_ESP_MAXIMUM_RETRY
 
 #if CONFIG_ESP_STATION_EXAMPLE_WPA3_SAE_PWE_HUNT_AND_PECK
 #define ESP_WIFI_SAE_MODE WPA3_SAE_PWE_HUNT_AND_PECK
-#define EXAMPLE_H2E_IDENTIFIER ""
+#define SMARTGARDEN_H2E_IDENTIFIER ""
 #elif CONFIG_ESP_STATION_EXAMPLE_WPA3_SAE_PWE_HASH_TO_ELEMENT
 #define ESP_WIFI_SAE_MODE WPA3_SAE_PWE_HASH_TO_ELEMENT
-#define EXAMPLE_H2E_IDENTIFIER CONFIG_ESP_WIFI_PW_ID
+#define SMARTGARDEN_H2E_IDENTIFIER CONFIG_ESP_WIFI_PW_ID
 #elif CONFIG_ESP_STATION_EXAMPLE_WPA3_SAE_PWE_BOTH
 #define ESP_WIFI_SAE_MODE WPA3_SAE_PWE_BOTH
-#define EXAMPLE_H2E_IDENTIFIER CONFIG_ESP_WIFI_PW_ID
+#define SMARTGARDEN_H2E_IDENTIFIER CONFIG_ESP_WIFI_PW_ID
 #endif
 #if CONFIG_ESP_WIFI_AUTH_OPEN
 #define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_OPEN
@@ -157,16 +157,16 @@ void wifi_init_sta(void)
 
     wifi_config_t wifi_config = {
         .sta = {
-            .ssid = EXAMPLE_ESP_WIFI_SSID,
-            .password = EXAMPLE_ESP_WIFI_PASS,
+            .ssid = SMARTGARDEN_WIFI_SSID,
+            .password = SMARTGARDEN_WIFI_PASS,
             /* Authmode threshold resets to WPA2 as default if password matches WPA2 standards (password len => 8).
-             * If you want to connect the device to deprecated WEP/WPA networks, Please set the threshold value
+             * If you want to connect the device to deprecated WEP/WPA networks, set the threshold value
              * to WIFI_AUTH_WEP/WIFI_AUTH_WPA_PSK and set the password with length and format matching to
              * WIFI_AUTH_WEP/WIFI_AUTH_WPA_PSK standards.
              */
             .threshold.authmode = ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD,
             .sae_pwe_h2e = ESP_WIFI_SAE_MODE,
-            .sae_h2e_identifier = EXAMPLE_H2E_IDENTIFIER,
+            .sae_h2e_identifier = SMARTGARDEN_H2E_IDENTIFIER,
         },
     };
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
@@ -178,7 +178,7 @@ void wifi_init_sta(void)
 
 void app_main(void)
 {
-    //Initialize NVS
+    /* Initialize NVS storage */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
       ESP_ERROR_CHECK(nvs_flash_erase());
@@ -190,8 +190,7 @@ void app_main(void)
     led_init();
 
     if (CONFIG_LOG_MAXIMUM_LEVEL > CONFIG_LOG_DEFAULT_LEVEL) {
-        /* If you only want to open more logs in the wifi module, you need to make the max level greater than the default level,
-         * and call esp_log_level_set() before esp_wifi_init() to improve the log level of the wifi module. */
+        /* Set WiFi module log level to maximum configured level */
         esp_log_level_set("wifi", CONFIG_LOG_MAXIMUM_LEVEL);
     }
 
