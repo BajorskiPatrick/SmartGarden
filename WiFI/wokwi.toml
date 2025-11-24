@@ -1,0 +1,10 @@
+[wokwi]
+version = 1
+elf = "build/SmartGarden.elf"
+firmware = "build/SmartGarden.bin"
+bootloader = "build/bootloader/bootloader.bin"
+partitions = "build/partition_table/partition-table.bin"
+
+[[net.forward]]
+# Forward all traffic to the host network
+mode = "bridge"

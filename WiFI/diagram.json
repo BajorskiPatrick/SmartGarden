@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "author": "Your Name",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "wokwi-esp32-devkit-v1",
+      "id": "esp",
+      "top": 0,
+      "left": 0,
+      "attrs": { "env": "idf" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led1",
+      "top": -24,
+      "left": 124.8,
+      "attrs": { "color": "red" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r1",
+      "top": 19.2,
+      "left": 134.4,
+      "attrs": { "value": "220" }
+    }
+  ],
+  "connections": [
+    ["esp:TX0", "$serialMonitor:RX", "UART0"],
+    ["esp:RX0", "$serialMonitor:TX", "UART0"],
+    ["esp:2", "r1:1", "green", ["v0"]],
+    ["r1:2", "led1:A", "green", ["v0"]],
+    ["led1:C", "esp:GND.1", "black", ["v0"]]
+  ],
+  "dependencies": {}
+}
