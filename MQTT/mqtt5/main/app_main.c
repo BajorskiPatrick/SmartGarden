@@ -62,11 +62,16 @@ void publisher_task(void *pvParameters) {
             
             // Sekcja sensorów
             cJSON *sensors = cJSON_CreateObject();
+            char temp_str[8], hum_str[8], press_str[8], lux_str[8];
+            snprintf(temp_str, sizeof(temp_str), "%.2f",temp);
+            snprintf(hum_str, sizeof(hum_str), "%.2f", hum);
+            snprintf(press_str, sizeof(press_str), "%.2f", press);
+            snprintf(lux_str, sizeof(lux_str), "%.2f", lux);
             cJSON_AddNumberToObject(sensors, "soil_moisture_pct", soil);
-            cJSON_AddNumberToObject(sensors, "air_temperature_c", temp);
-            cJSON_AddNumberToObject(sensors, "air_humidity_pct", hum);
-            cJSON_AddNumberToObject(sensors, "pressure_hpa", press);
-            cJSON_AddNumberToObject(sensors, "light_lux", lux);
+            cJSON_AddStringToObject(sensors, "air_temperature_c", temp_str);
+            cJSON_AddStringToObject(sensors, "air_humidity_pct", hum_str);
+            cJSON_AddStringToObject(sensors, "pressure_hpa", press_str);
+            cJSON_AddStringToObject(sensors, "light_lux", lux_str);
             
             cJSON_AddItemToObject(root, "sensors", sensors);
 
