@@ -1,20 +1,3 @@
-/*
- * SPDX-FileCopyrightText: 2021-2024 Espressif Systems (Shanghai) CO LTD
- *
- * SPDX-License-Identifier: Unlicense OR CC0-1.0
- */
-
-
-
-/****************************************************************************
-*
-* This demo showcases BLE GATT client. It can scan BLE devices and connect to one device.
-* Run the gatt_server demo, the client demo will automatically connect to the gatt_server demo.
-* Client demo will enable gatt_server's notify after connection. The two devices will then exchange
-* data.
-*
-****************************************************************************/
-
 #include <stdint.h>
 #include <string.h>
 #include <stdbool.h>
@@ -72,6 +55,9 @@ static uint16_t h_char_alert = INVALID_HANDLE;
 static uint16_t h_char_unk  = INVALID_HANDLE;
 
 static bool connect    = false;
+
+static uint8_t click_count = 0;        // Licznik kliknięć
+static bool trigger_alarm = false;     // Flaga "uruchom alarm" dla pętli głównej
 
 /* Declare static functions */
 static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);
@@ -260,7 +246,6 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
     /* --- ODBIERANIE DANYCH --- */
     case ESP_GATTC_READ_CHAR_EVT:
     case ESP_GATTC_NOTIFY_EVT: {
-        // Wspólna obsługa dla odczytu i powiadomień
         uint16_t handle = (event == ESP_GATTC_READ_CHAR_EVT) ? p_data->read.handle : p_data->notify.handle;
         uint8_t *val = (event == ESP_GATTC_READ_CHAR_EVT) ? p_data->read.value : p_data->notify.value;
         uint16_t len = (event == ESP_GATTC_READ_CHAR_EVT) ? p_data->read.value_len : p_data->notify.value_len;
@@ -273,13 +258,21 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
                 ESP_LOGI(GATTC_TAG, ">>> [ALERT] Zmiana stanu! (Hex: %02x)", val[0]);
             } 
             else if (handle == h_char_unk) {
-                ESP_LOGI(GATTC_TAG, ">>> [UNKNOWN/PRZYCISK] Zdarzenie! (Hex: %02x)", val[0]);
-                if (val[0] == 0x01) ESP_LOGI(GATTC_TAG, "    -> Prawdopodobnie przycisk wcisniety (Click)");
-                if (val[0] == 0x02) ESP_LOGI(GATTC_TAG, "    -> Prawdopodobnie dwuklik (Double Click)");
+                // --- LOGIKA ZLICZANIA KLIKNIĘĆ ---
+                ESP_LOGI(GATTC_TAG, ">>> [PRZYCISK] Otrzymano sygnał: %02x", val[0]);
+                
+                // Zakładamy, że 0x01 to kliknięcie (single click)
+                if (val[0] == 0x01) {
+                    click_count++;
+                    ESP_LOGI(GATTC_TAG, "Licznik kliknięć: %d / 5", click_count);
+
+                    if (click_count >= 5) {
+                        ESP_LOGW(GATTC_TAG, "!!! 5 KLIKNIĘĆ OSIĄGNIĘTE - ZLECENIE ALARMU !!!");
+                        click_count = 0;      // Reset licznika
+                        trigger_alarm = true; // Ustaw flagę, app_main ją obsłuży
+                    }
+                }
             } 
-            else {
-                ESP_LOGI(GATTC_TAG, ">>> [INNE] Handle: %d, Val: %02x", handle, val[0]);
-            }
         }
         break;
     }
@@ -292,10 +285,17 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
     
     case ESP_GATTC_DISCONNECT_EVT:
         connect = false;
-        // Resetujemy uchwyty po rozłączeniu
+        // Resetujemy uchwyty po rozłączeniu, żeby przy ponownym połączeniu szukać ich od nowa
         h_batt_start = 0; h_alert_start = 0; h_unk_start = 0;
         h_char_batt = INVALID_HANDLE; h_char_alert = INVALID_HANDLE; h_char_unk = INVALID_HANDLE;
-        ESP_LOGI(GATTC_TAG, "Disconnected.");
+        
+        ESP_LOGI(GATTC_TAG, "Disconnected. Reason: 0x%x", p_data->disconnect.reason);
+        ESP_LOGI(GATTC_TAG, "Restarting scanning in 30 seconds duration...");
+        
+        // --- KLUCZOWA ZMIANA: Wznawiamy skanowanie ---
+        // Dzięki temu ESP32 wróci do "nasłuchiwania" i jak tylko tag się pojawi,
+        // kod w esp_gap_cb (SCAN_RESULT) ponownie zainicjuje połączenie.
+        esp_ble_gap_start_scanning(30); 
         break;
 
     default:
@@ -428,7 +428,7 @@ static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp
 
 void app_main(void)
 {
-    // Inicjalizacja NVS
+    // --- Inicjalizacja (bez zmian) ---
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -436,30 +436,82 @@ void app_main(void)
     }
     ESP_ERROR_CHECK( ret );
 
-    // Inicjalizacja Controllera i Bluedroid
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     ret = esp_bt_controller_init(&bt_cfg);
-    if (ret) { ESP_LOGE(GATTC_TAG, "%s init controller failed", __func__); return; }
+    if (ret) { return; }
 
     ret = esp_bt_controller_enable(ESP_BT_MODE_BLE);
-    if (ret) { ESP_LOGE(GATTC_TAG, "%s enable controller failed", __func__); return; }
+    if (ret) { return; }
 
     ret = esp_bluedroid_init();
-    if (ret) { ESP_LOGE(GATTC_TAG, "%s init bluetooth failed", __func__); return; }
+    if (ret) { return; }
 
     ret = esp_bluedroid_enable();
-    if (ret) { ESP_LOGE(GATTC_TAG, "%s enable bluetooth failed", __func__); return; }
+    if (ret) { return; }
 
-    // Rejestracja callbacków
     ret = esp_ble_gap_register_callback(esp_gap_cb);
-    if (ret){ ESP_LOGE(GATTC_TAG, "gap register failed"); return; }
+    if (ret){ return; }
 
     ret = esp_ble_gattc_register_callback(esp_gattc_cb);
-    if(ret){ ESP_LOGE(GATTC_TAG, "gattc register failed"); return; }
+    if(ret){ return; }
 
     ret = esp_ble_gattc_app_register(PROFILE_A_APP_ID);
-    if (ret){ ESP_LOGE(GATTC_TAG, "gattc app register failed"); }
+    if (ret){ }
 
     esp_err_t local_mtu_ret = esp_ble_gatt_set_local_mtu(500);
-    if (local_mtu_ret){ ESP_LOGE(GATTC_TAG, "set local MTU failed"); }
+    if (local_mtu_ret){ }
+
+    // --- PĘTLA OBSŁUGI ZDARZEŃ ---
+    ESP_LOGI(GATTC_TAG, "Start pętli głównej. Czekam na 5 kliknięć...");
+
+    while (1) {
+        // Sprawdzamy czy flaga została ustawiona w callbacku
+        if (trigger_alarm) {
+            
+            // Upewniamy się, że nadal jesteśmy połączeni
+            if (connect && h_char_alert != INVALID_HANDLE) {
+                
+                // 1. WŁĄCZ ALARM (High lub Mild)
+                uint8_t write_val = 0x02;
+                ESP_LOGW(GATTC_TAG, ">>> ALARM START! Typ: 0x%02x (Trwa 5s) <<<", write_val);
+                
+                esp_ble_gattc_write_char(
+                    gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
+                    gl_profile_tab[PROFILE_A_APP_ID].conn_id,
+                    h_char_alert,
+                    sizeof(write_val),
+                    &write_val,
+                    ESP_GATT_WRITE_TYPE_NO_RSP,
+                    ESP_GATT_AUTH_REQ_NONE
+                );
+
+                // 2. CZEKAJ 5 SEKUND
+                vTaskDelay(5000 / portTICK_PERIOD_MS);
+
+                // 3. WYŁĄCZ ALARM
+                ESP_LOGI(GATTC_TAG, ">>> ALARM STOP (Wysylanie 0x00) <<<");
+                write_val = 0x00; // No Alert
+                
+                esp_ble_gattc_write_char(
+                    gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
+                    gl_profile_tab[PROFILE_A_APP_ID].conn_id,
+                    h_char_alert,
+                    sizeof(write_val),
+                    &write_val,
+                    ESP_GATT_WRITE_TYPE_NO_RSP,
+                    ESP_GATT_AUTH_REQ_NONE
+                );
+
+                // Reset flagi - czekamy na kolejne 5 kliknięć
+                trigger_alarm = false;
+
+            } else {
+                ESP_LOGW(GATTC_TAG, "Nie można włączyć alarmu - brak połączenia");
+                trigger_alarm = false; // Resetujemy, żeby nie odpaliło się od razu po ponownym połączeniu
+            }
+        }
+
+        // Krótkie opóźnienie w pętli, żeby nie zjadać 100% CPU
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+    }
 }
