@@ -6,7 +6,7 @@ import time
 BROKER_ADDRESS = "172.20.10.2" # Zmień na IP swojego komputera/brokera
 TOPIC_ROOT = "garden/+/+/telemetry" # '+' to wildcard - odbiera od wszystkich userów i urządzeń
 
-def on_connect(client, userdata, flags, rc):
+def on_connect(client, userdata, flags, rc, properties):
     print(f"Połączono z brokerem! Kod: {rc}")
     client.subscribe(TOPIC_ROOT)
     print(f"Nasłuchiwanie na: {TOPIC_ROOT}")
