@@ -285,16 +285,18 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
     
     case ESP_GATTC_DISCONNECT_EVT:
         connect = false;
-        // Resetujemy uchwyty po rozłączeniu, żeby przy ponownym połączeniu szukać ich od nowa
+        // Resetujemy uchwyty po rozłączeniu
         h_batt_start = 0; h_alert_start = 0; h_unk_start = 0;
         h_char_batt = INVALID_HANDLE; h_char_alert = INVALID_HANDLE; h_char_unk = INVALID_HANDLE;
         
+        // --- ZMIANA 1: Reset licznika kliknięć ---
+        click_count = 0; 
+        ESP_LOGI(GATTC_TAG, "Licznik kliknięć zresetowany.");
+        // ----------------------------------------
+
         ESP_LOGI(GATTC_TAG, "Disconnected. Reason: 0x%x", p_data->disconnect.reason);
         ESP_LOGI(GATTC_TAG, "Restarting scanning in 30 seconds duration...");
         
-        // --- KLUCZOWA ZMIANA: Wznawiamy skanowanie ---
-        // Dzięki temu ESP32 wróci do "nasłuchiwania" i jak tylko tag się pojawi,
-        // kod w esp_gap_cb (SCAN_RESULT) ponownie zainicjuje połączenie.
         esp_ble_gap_start_scanning(30); 
         break;
 
@@ -329,31 +331,43 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
         esp_ble_gap_cb_param_t *scan_result = (esp_ble_gap_cb_param_t *)param;
         switch (scan_result->scan_rst.search_evt) {
         case ESP_GAP_SEARCH_INQ_RES_EVT:
-            /* Wypisujemy logi, żeby widzieć co się dzieje */
-            ESP_LOG_BUFFER_HEX(GATTC_TAG, scan_result->scan_rst.bda, 6);
-            ESP_LOGI(GATTC_TAG, "RSSI: %d", scan_result->scan_rst.rssi);
+            /* Pobieramy nazwę urządzenia z pakietu reklamowego */
+            adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv, ESP_BLE_AD_TYPE_NAME_CMPL, &adv_name_len);
 
-            /* DEFINIUJEMY ADRES MAC TWOJEGO iTAGA (spisany ze zdjęcia) */
+            /* ZMIENNA POMOCNICZA: Czy znaleziono pasujące urządzenie? */
+            bool found_target = false;
+
+            /* 1. SPRAWDZAMY MAC (dla fizycznego iTaga) */
             uint8_t target_mac[6] = {0xFF, 0xFF, 0x1B, 0x0A, 0xF9, 0x96};
-
-            /* Sprawdzamy czy znalezione urządzenie ma ten konkretny adres MAC */
             if (memcmp(scan_result->scan_rst.bda, target_mac, 6) == 0) {
-                ESP_LOGI(GATTC_TAG, ">>> ZNALEZIONO iTAG PO ADRESIE MAC! <<<");
-                
-                if (connect == false) {
-                    connect = true;
-                    ESP_LOGI(GATTC_TAG, "Connect to the remote device.");
-                    esp_ble_gap_stop_scanning();
-                    esp_ble_gatt_creat_conn_params_t creat_conn_params = {0};
-                    memcpy(&creat_conn_params.remote_bda, scan_result->scan_rst.bda, ESP_BD_ADDR_LEN);
-                    creat_conn_params.remote_addr_type = scan_result->scan_rst.ble_addr_type;
-                    creat_conn_params.own_addr_type = BLE_ADDR_TYPE_PUBLIC;
-                    creat_conn_params.is_direct = true;
-                    creat_conn_params.is_aux = false;
-                    creat_conn_params.phy_mask = 0x0;
-                    esp_ble_gattc_enh_open(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
-                                        &creat_conn_params);
+                ESP_LOGI(GATTC_TAG, ">>> ZNALEZIONO ORYGINALNY iTAG (MAC) <<<");
+                found_target = true;
+            }
+
+            /* 2. SPRAWDZAMY NAZWĘ (dla ESP32 Gatt Server) */
+            /* Nazwa zdefiniowana w gatts_demo.c to "iTAG_simulation" */
+            const char *server_name = "iTAG_simulation";
+            if (adv_name != NULL) {
+                if (strlen(server_name) == adv_name_len && strncmp((char *)adv_name, server_name, adv_name_len) == 0) {
+                    ESP_LOGI(GATTC_TAG, ">>> ZNALEZIONO ESP32 SERVER (Nazwa: %s) <<<", server_name);
+                    found_target = true;
                 }
+            }
+
+            /* JEŚLI ZNALEZIONO COKOLWIEK I NIE JESTEŚMY POŁĄCZENI -> ŁĄCZYMY SIĘ */
+            if (found_target && connect == false) {
+                connect = true;
+                ESP_LOGI(GATTC_TAG, "Connect to the remote device.");
+                esp_ble_gap_stop_scanning();
+                esp_ble_gatt_creat_conn_params_t creat_conn_params = {0};
+                memcpy(&creat_conn_params.remote_bda, scan_result->scan_rst.bda, ESP_BD_ADDR_LEN);
+                creat_conn_params.remote_addr_type = scan_result->scan_rst.ble_addr_type;
+                creat_conn_params.own_addr_type = BLE_ADDR_TYPE_PUBLIC;
+                creat_conn_params.is_direct = true;
+                creat_conn_params.is_aux = false;
+                creat_conn_params.phy_mask = 0x0;
+                esp_ble_gattc_enh_open(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
+                                    &creat_conn_params);
             }
             break;
         case ESP_GAP_SEARCH_INQ_CMPL_EVT:
