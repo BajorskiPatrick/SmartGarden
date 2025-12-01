@@ -14,15 +14,13 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 
-#define GATTC_TAG "GATTC_DEMO"
+#define GATTC_TAG "GATT_CLIENT"
 
 /* ZMIANA 1: Ustawiamy UUID standardowego serwisu baterii */
 #define REMOTE_SERVICE_UUID        0x180F
 
 /* ZMIANA 2: Ustawiamy UUID charakterystyki poziomu baterii */
 #define REMOTE_NOTIFY_CHAR_UUID    0x2A19
-
-#define GATTC_TAG "GATTC_DEMO"
 
 /* --- DEFINICJE UUID --- */
 // 1. Battery Service
