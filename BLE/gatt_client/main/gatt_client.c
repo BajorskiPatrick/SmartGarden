@@ -16,22 +16,13 @@
 
 #define GATTC_TAG "GATT_CLIENT"
 
-/* ZMIANA 1: Ustawiamy UUID standardowego serwisu baterii */
-#define REMOTE_SERVICE_UUID        0x180F
-
-/* ZMIANA 2: Ustawiamy UUID charakterystyki poziomu baterii */
-#define REMOTE_NOTIFY_CHAR_UUID    0x2A19
-
-/* --- DEFINICJE UUID --- */
-// 1. Battery Service
+// UUID serwisu i charakterystyk
 #define UUID_SVC_BATTERY      0x180F
 #define UUID_CHAR_BATTERY     0x2A19
 
-// 2. Immediate Alert Service
 #define UUID_SVC_ALERT        0x1802
 #define UUID_CHAR_ALERT       0x2A06
 
-// 3. Unknown Service (Przyciski / Custom)
 #define UUID_SVC_UNKNOWN      0xFFE0
 #define UUID_CHAR_UNKNOWN     0xFFE1
 
@@ -42,22 +33,21 @@
 #define EXAMPLE_TEST_COUNT 50
 #endif
 
-// Zmienne do przechowywania uchwytów (handles) dla znalezionych serwisów
+// Zmienne uchwytów dla znalezionych serwisów
 static uint16_t h_batt_start = 0, h_batt_end = 0;
 static uint16_t h_alert_start = 0, h_alert_end = 0;
 static uint16_t h_unk_start = 0,  h_unk_end = 0;
 
-// Zmienne do przechowywania uchwytów charakterystyk (żeby wiedzieć, co przyszło)
+// Zmienne uchwytów charakterystyk 
 static uint16_t h_char_batt = INVALID_HANDLE;
 static uint16_t h_char_alert = INVALID_HANDLE;
 static uint16_t h_char_unk  = INVALID_HANDLE;
 
 static bool connect    = false;
 
-static uint8_t click_count = 0;        // Licznik kliknięć
-static bool trigger_alarm = false;     // Flaga "uruchom alarm" dla pętli głównej
+static uint8_t click_count = 0;        
+static bool trigger_alarm = false;    
 
-/* Declare static functions */
 static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);
 static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param);
 static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param);
@@ -82,11 +72,10 @@ struct gattc_profile_inst {
     esp_bd_addr_t remote_bda;
 };
 
-/* One gatt-based profile one app_id and one gattc_if, this array will store the gattc_if returned by ESP_GATTS_REG_EVT */
 static struct gattc_profile_inst gl_profile_tab[PROFILE_NUM] = {
     [PROFILE_A_APP_ID] = {
         .gattc_cb = gattc_profile_event_handler,
-        .gattc_if = ESP_GATT_IF_NONE,       /* Not get the gatt_if, so initial is ESP_GATT_IF_NONE */
+        .gattc_if = ESP_GATT_IF_NONE,   
     },
 };
 
@@ -118,7 +107,7 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
 
     case ESP_GATTC_CFG_MTU_EVT:
         ESP_LOGI(GATTC_TAG, "MTU exchange, status %d", param->cfg_mtu.status);
-        // Po wymianie MTU startujemy szukanie serwisów. NULL = szukaj wszystkich.
+        // Po wymianie MTU startujemy szukanie serwisów. Szukamy wszystkich
         esp_ble_gattc_search_service(gattc_if, param->cfg_mtu.conn_id, NULL);
         break;
 
@@ -150,31 +139,28 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         }
         ESP_LOGI(GATTC_TAG, "Service search complete. Now looking for characteristics...");
 
-        // Helper variables
         uint16_t count = 0;
         esp_gattc_char_elem_t *char_result = NULL;
         esp_bt_uuid_t char_uuid;
         char_uuid.len = ESP_UUID_LEN_16;
 
-        // --- 1. OBSŁUGA BATERII (2A19) ---
-        if (h_batt_start > 0) {
+        //  OBSŁUGA BATERII (2A19) 
+                if (h_batt_start > 0) {
             char_uuid.uuid.uuid16 = UUID_CHAR_BATTERY;
-            count = 1; // Szukamy jednej
+            count = 1; 
             char_result = (esp_gattc_char_elem_t *)malloc(sizeof(esp_gattc_char_elem_t) * count);
             
             if (esp_ble_gattc_get_char_by_uuid(gattc_if, p_data->search_cmpl.conn_id, h_batt_start, h_batt_end, char_uuid, char_result, &count) == ESP_GATT_OK && count > 0) {
                 h_char_batt = char_result[0].char_handle;
                 ESP_LOGI(GATTC_TAG, "Setup Battery: Read & Notify");
                 
-                // Odczyt (bo bateria ma Read)
                 esp_ble_gattc_read_char(gattc_if, p_data->search_cmpl.conn_id, h_char_batt, ESP_GATT_AUTH_REQ_NONE);
-                // Rejestracja powiadomień
                 esp_ble_gattc_register_for_notify(gattc_if, gl_profile_tab[PROFILE_A_APP_ID].remote_bda, h_char_batt);
             }
             free(char_result);
         }
 
-        // --- 2. OBSŁUGA ALERTU (2A06) ---
+        // OBSŁUGA ALERTU (2A06)
         if (h_alert_start > 0) {
             char_uuid.uuid.uuid16 = UUID_CHAR_ALERT;
             count = 1;
@@ -183,13 +169,12 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
             if (esp_ble_gattc_get_char_by_uuid(gattc_if, p_data->search_cmpl.conn_id, h_alert_start, h_alert_end, char_uuid, char_result, &count) == ESP_GATT_OK && count > 0) {
                 h_char_alert = char_result[0].char_handle;
                 ESP_LOGI(GATTC_TAG, "Setup Alert: Notify only (No Read)");
-                // 2A06 zazwyczaj nie ma Read, tylko Write/Notify
                 esp_ble_gattc_register_for_notify(gattc_if, gl_profile_tab[PROFILE_A_APP_ID].remote_bda, h_char_alert);
             }
             free(char_result);
         }
 
-        // --- 3. OBSŁUGA UNKNOWN/BUTTON (FFE1) ---
+        // OBSŁUGA UNKNOWN/BUTTON (FFE1) 
         if (h_unk_start > 0) {
             char_uuid.uuid.uuid16 = UUID_CHAR_UNKNOWN;
             count = 1;
@@ -199,9 +184,7 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
                 h_char_unk = char_result[0].char_handle;
                 ESP_LOGI(GATTC_TAG, "Setup Unknown: Read & Notify");
                 
-                // Odczyt
                 esp_ble_gattc_read_char(gattc_if, p_data->search_cmpl.conn_id, h_char_unk, ESP_GATT_AUTH_REQ_NONE);
-                // Rejestracja powiadomień
                 esp_ble_gattc_register_for_notify(gattc_if, gl_profile_tab[PROFILE_A_APP_ID].remote_bda, h_char_unk);
             }
             free(char_result);
@@ -219,7 +202,6 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         count = 1;
         descr_elem_result = malloc(sizeof(esp_gattc_descr_elem_t) * count);
         if (descr_elem_result) {
-            // POPRAWKA: Używamy globalnego conn_id z gl_profile_tab
             esp_err_t ret = esp_ble_gattc_get_descr_by_char_handle(gattc_if, 
                                                                     gl_profile_tab[PROFILE_A_APP_ID].conn_id, 
                                                                     p_data->reg_for_notify.handle, 
@@ -227,7 +209,6 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
                                                                     descr_elem_result, 
                                                                     &count);
             if (ret == ESP_GATT_OK && count > 0) {
-                // POPRAWKA: Tutaj również używamy globalnego conn_id
                 esp_ble_gattc_write_char_descr(gattc_if, 
                                                gl_profile_tab[PROFILE_A_APP_ID].conn_id,
                                                descr_elem_result[0].handle, 
@@ -241,7 +222,7 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         break;
     }
 
-    /* --- ODBIERANIE DANYCH --- */
+    // ODBIERANIE DANYCH 
     case ESP_GATTC_READ_CHAR_EVT:
     case ESP_GATTC_NOTIFY_EVT: {
         uint16_t handle = (event == ESP_GATTC_READ_CHAR_EVT) ? p_data->read.handle : p_data->notify.handle;
@@ -256,18 +237,16 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
                 ESP_LOGI(GATTC_TAG, ">>> [ALERT] Zmiana stanu! (Hex: %02x)", val[0]);
             } 
             else if (handle == h_char_unk) {
-                // --- LOGIKA ZLICZANIA KLIKNIĘĆ ---
                 ESP_LOGI(GATTC_TAG, ">>> [PRZYCISK] Otrzymano sygnał: %02x", val[0]);
                 
-                // Zakładamy, że 0x01 to kliknięcie (single click)
                 if (val[0] == 0x01) {
                     click_count++;
                     ESP_LOGI(GATTC_TAG, "Licznik kliknięć: %d / 5", click_count);
 
                     if (click_count >= 5) {
                         ESP_LOGW(GATTC_TAG, "!!! 5 KLIKNIĘĆ OSIĄGNIĘTE - ZLECENIE ALARMU !!!");
-                        click_count = 0;      // Reset licznika
-                        trigger_alarm = true; // Ustaw flagę, app_main ją obsłuży
+                        click_count = 0;      
+                        trigger_alarm = true; 
                     }
                 }
             } 
@@ -283,19 +262,17 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
     
     case ESP_GATTC_DISCONNECT_EVT:
         connect = false;
-        // Resetujemy uchwyty po rozłączeniu
+        // Reset uchwytów po rozłączeniu
         h_batt_start = 0; h_alert_start = 0; h_unk_start = 0;
         h_char_batt = INVALID_HANDLE; h_char_alert = INVALID_HANDLE; h_char_unk = INVALID_HANDLE;
         
-        // --- ZMIANA 1: Reset licznika kliknięć ---
         click_count = 0; 
         ESP_LOGI(GATTC_TAG, "Licznik kliknięć zresetowany.");
-        // ----------------------------------------
 
         ESP_LOGI(GATTC_TAG, "Disconnected. Reason: 0x%x", p_data->disconnect.reason);
-        ESP_LOGI(GATTC_TAG, "Restarting scanning in 30 seconds duration...");
+        ESP_LOGI(GATTC_TAG, "Restarting scanning...");
         
-        esp_ble_gap_start_scanning(30); 
+        esp_ble_gap_start_scanning(100); 
         break;
 
     default:
@@ -309,15 +286,11 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
     uint8_t adv_name_len = 0;
     switch (event) {
     case ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT: {
-        // The unit of duration is seconds.
-        // If duration is set to 0, scanning will continue indefinitely
-        // until esp_ble_gap_stop_scanning is explicitly called.
-        uint32_t duration = 30;
+        uint32_t duration = 100;
         esp_ble_gap_start_scanning(duration);
         break;
     }
     case ESP_GAP_BLE_SCAN_START_COMPLETE_EVT:
-        //scan start complete event to indicate scan start successfully or failed
         if (param->scan_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
             ESP_LOGE(GATTC_TAG, "Scanning start failed, status %x", param->scan_start_cmpl.status);
             break;
@@ -329,21 +302,19 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
         esp_ble_gap_cb_param_t *scan_result = (esp_ble_gap_cb_param_t *)param;
         switch (scan_result->scan_rst.search_evt) {
         case ESP_GAP_SEARCH_INQ_RES_EVT:
-            /* Pobieramy nazwę urządzenia z pakietu reklamowego */
+            // Pobieranie nazwy urządzenia z pakietu reklamowego
             adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv, ESP_BLE_AD_TYPE_NAME_CMPL, &adv_name_len);
 
-            /* ZMIENNA POMOCNICZA: Czy znaleziono pasujące urządzenie? */
             bool found_target = false;
 
-            /* 1. SPRAWDZAMY MAC (dla fizycznego iTaga) */
+            // Sprawdzanie MAC iTAGa
             uint8_t target_mac[6] = {0xFF, 0xFF, 0x1B, 0x0A, 0xF9, 0x96};
             if (memcmp(scan_result->scan_rst.bda, target_mac, 6) == 0) {
                 ESP_LOGI(GATTC_TAG, ">>> ZNALEZIONO ORYGINALNY iTAG (MAC) <<<");
                 found_target = true;
             }
 
-            /* 2. SPRAWDZAMY NAZWĘ (dla ESP32 Gatt Server) */
-            /* Nazwa zdefiniowana w gatts_demo.c to "iTAG_simulation" */
+            // SPRAWDZAMY NAZWY dla ESP32 Gatt Server)
             const char *server_name = "iTAG_simulation";
             if (adv_name != NULL) {
                 if (strlen(server_name) == adv_name_len && strncmp((char *)adv_name, server_name, adv_name_len) == 0) {
@@ -352,7 +323,7 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
                 }
             }
 
-            /* JEŚLI ZNALEZIONO COKOLWIEK I NIE JESTEŚMY POŁĄCZENI -> ŁĄCZYMY SIĘ */
+            // Jeśli znaloziono cel, to łączymy
             if (found_target && connect == false) {
                 connect = true;
                 ESP_LOGI(GATTC_TAG, "Connect to the remote device.");
@@ -411,7 +382,6 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
 
 static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param)
 {
-    /* If event is register event, store the gattc_if for each profile */
     if (event == ESP_GATTC_REG_EVT) {
         if (param->reg.status == ESP_GATT_OK) {
             gl_profile_tab[param->reg.app_id].gattc_if = gattc_if;
@@ -423,12 +393,10 @@ static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp
         }
     }
 
-    /* If the gattc_if equal to profile A, call profile A cb handler,
-     * so here call each profile's callback */
     do {
         int idx;
         for (idx = 0; idx < PROFILE_NUM; idx++) {
-            if (gattc_if == ESP_GATT_IF_NONE || /* ESP_GATT_IF_NONE, not specify a certain gatt_if, need to call every profile cb function */
+            if (gattc_if == ESP_GATT_IF_NONE || 
                     gattc_if == gl_profile_tab[idx].gattc_if) {
                 if (gl_profile_tab[idx].gattc_cb) {
                     gl_profile_tab[idx].gattc_cb(event, gattc_if, param);
@@ -440,7 +408,7 @@ static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp
 
 void app_main(void)
 {
-    // --- Inicjalizacja (bez zmian) ---
+    // Inicjalizacja NVS a następnie BT
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -473,17 +441,13 @@ void app_main(void)
     esp_err_t local_mtu_ret = esp_ble_gatt_set_local_mtu(500);
     if (local_mtu_ret){ }
 
-    // --- PĘTLA OBSŁUGI ZDARZEŃ ---
     ESP_LOGI(GATTC_TAG, "Start pętli głównej. Czekam na 5 kliknięć...");
 
     while (1) {
-        // Sprawdzamy czy flaga została ustawiona w callbacku
         if (trigger_alarm) {
             
-            // Upewniamy się, że nadal jesteśmy połączeni
             if (connect && h_char_alert != INVALID_HANDLE) {
                 
-                // 1. WŁĄCZ ALARM (High lub Mild)
                 uint8_t write_val = 0x02;
                 ESP_LOGW(GATTC_TAG, ">>> ALARM START! Typ: 0x%02x (Trwa 5s) <<<", write_val);
                 
@@ -497,12 +461,10 @@ void app_main(void)
                     ESP_GATT_AUTH_REQ_NONE
                 );
 
-                // 2. CZEKAJ 5 SEKUND
                 vTaskDelay(5000 / portTICK_PERIOD_MS);
 
-                // 3. WYŁĄCZ ALARM
                 ESP_LOGI(GATTC_TAG, ">>> ALARM STOP (Wysylanie 0x00) <<<");
-                write_val = 0x00; // No Alert
+                write_val = 0x00; 
                 
                 esp_ble_gattc_write_char(
                     gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
@@ -514,16 +476,13 @@ void app_main(void)
                     ESP_GATT_AUTH_REQ_NONE
                 );
 
-                // Reset flagi - czekamy na kolejne 5 kliknięć
                 trigger_alarm = false;
 
             } else {
                 ESP_LOGW(GATTC_TAG, "Nie można włączyć alarmu - brak połączenia");
-                trigger_alarm = false; // Resetujemy, żeby nie odpaliło się od razu po ponownym połączeniu
+                trigger_alarm = false; 
             }
         }
-
-        // Krótkie opóźnienie w pętli, żeby nie zjadać 100% CPU
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }
 }
