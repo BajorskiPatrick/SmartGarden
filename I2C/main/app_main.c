@@ -93,13 +93,23 @@ void get_sensor_data(int *soil_moisture, float *temp, float *humidity, float *pr
     
     if (err == ESP_OK) {
         *light_lux = (float)lux_val;
-        ESP_LOGD(TAG, "VEML7700 Lux: %.2f", lux_val);
+        ESP_LOGI(TAG, "VEML7700 Lux: %.2f", lux_val);
     } else {
         ESP_LOGE(TAG, "Błąd odczytu VEML7700!");
         *light_lux = -1.0; // Wartość błędu
     }
 
     get_water_level_status(water_ok);
+    
+    // Wyświetlenie wszystkich odczytanych wartości
+    ESP_LOGI(TAG, "========== ODCZYT CZUJNIKÓW ==========");
+    ESP_LOGI(TAG, "Wilgotność gleby:    %d %%", *soil_moisture);
+    ESP_LOGI(TAG, "Temperatura:         %.2f °C", *temp);
+    ESP_LOGI(TAG, "Wilgotność powietrza: %.2f %%", *humidity);
+    ESP_LOGI(TAG, "Ciśnienie:           %.2f hPa", *pressure);
+    ESP_LOGI(TAG, "Natężenie światła:   %.2f lux", *light_lux);
+    ESP_LOGI(TAG, "Stan zbiornika:      %s", *water_ok ? "OK" : "NISKI POZIOM");
+    ESP_LOGI(TAG, "=======================================");
 }
 
 // Funkcja wysyłająca alert, gdy poziom wody jest niski
@@ -376,7 +386,11 @@ void app_main(void)
     }
 
     // Łączenie z WiFi (konfigurowane w menuconfig)
-    ESP_ERROR_CHECK(example_connect());
+    // Nie wymuszamy połączenia - aplikacja będzie działać nawet bez WiFi
+    esp_err_t wifi_err = example_connect();
+    if (wifi_err != ESP_OK) {
+        ESP_LOGW(TAG, "Nie udało się połączyć z WiFi - kontynuuję bez sieci");
+    }
 
     mqtt5_app_start();
 }

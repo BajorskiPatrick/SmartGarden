@@ -1,4 +1,5 @@
 #include "veml7700.h"
+#include "driver/i2c.h"
 #include "esp_log.h"
 #include <math.h>
 
@@ -36,7 +37,7 @@ static esp_err_t read_register(veml7700_handle_t *handle, uint8_t reg, uint16_t 
     return err;
 }
 
-esp_err_t veml7700_init(veml7700_handle_t *handle, i2c_port_t port) {
+esp_err_t veml7700_init(veml7700_handle_t *handle, int port) {
     handle->i2c_port = port;
     // Domyślna konfiguracja: Gain x1/8, IT 100ms (bezpieczne startowe)
     // Musimy włączyć urządzenie (ALS_SD = 0) 

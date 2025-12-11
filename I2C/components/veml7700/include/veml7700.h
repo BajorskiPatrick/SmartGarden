@@ -1,6 +1,7 @@
 #pragma once
 
-#include "driver/i2c.h"
+#include <stdint.h>
+#include <stdbool.h>
 #include "esp_err.h"
 
 // Adres urządzenia I2C (0x10 zgodnie z dokumentacją) 
@@ -34,7 +35,7 @@ typedef enum {
 
 // Główna struktura konfiguracyjna
 typedef struct {
-    i2c_port_t i2c_port;
+    int i2c_port;
     veml7700_gain_t gain;
     veml7700_it_t integration_time;
 } veml7700_handle_t;
@@ -42,7 +43,7 @@ typedef struct {
 /**
  * @brief Inicjalizacja i konfiguracja czujnika
  */
-esp_err_t veml7700_init(veml7700_handle_t *handle, i2c_port_t port);
+esp_err_t veml7700_init(veml7700_handle_t *handle, int port);
 
 /**
  * @brief Ustawienie parametrów pomiaru (Gain i Integration Time)
