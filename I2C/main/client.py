@@ -51,7 +51,7 @@ def on_message(client, userdata, msg):
             print(f"Wilgotność: {sensors.get('soil_moisture_pct')}%")
             print(f"Temperatura:       {sensors.get('air_temperature_c')} C")
             print(f"Wilgotność powietrza: {sensors.get('air_humidity_pct')}%")
-            print(f"Ciśnienie:        {sensors.get('air_pressure_hpa')} hPa")
+            print(f"Ciśnienie:        {sensors.get('pressure_hpa')} hPa")
             print(f"Natężenie światła: {sensors.get('light_lux')} lx")
             print(f"Zbiornik:   {water_status}")
             print("-" * 30)

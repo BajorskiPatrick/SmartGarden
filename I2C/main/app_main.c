@@ -379,8 +379,7 @@ void app_main(void)
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "VEML7700 znaleziony i skonfigurowany!");
         
-        // Opcjonalnie: Ustaw konkretne parametry, np. Gain x2, 100ms
-        veml7700_set_config(&veml_sensor, VEML7700_GAIN_2, VEML7700_IT_100MS);
+        veml7700_set_config(&veml_sensor, VEML7700_GAIN_2, VEML7700_IT_100MS, VEML7700_PERS_1);
     } else {
         ESP_LOGE(TAG, "Nie wykryto VEML7700 (błąd: %s)", esp_err_to_name(err));
     }
