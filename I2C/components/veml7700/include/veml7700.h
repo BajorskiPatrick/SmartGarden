@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-// Adres urządzenia I2C (0x10 - 7-bitowy adres slave) [cite: 386]
+// Adres urządzenia I2C (0x10 - 7-bitowy adres slave)
 #define VEML7700_I2C_ADDR 0x10
 
 /**
@@ -46,7 +46,7 @@ typedef enum {
 } veml7700_pers_t;
 
 /**
- * @brief Tryby oszczędzania energii (Power Saving Mode) [cite: 430]
+ * @brief Tryby oszczędzania energii (Power Saving Mode)
  */
 typedef enum {
     VEML7700_PSM_MODE_1 = 0x00,

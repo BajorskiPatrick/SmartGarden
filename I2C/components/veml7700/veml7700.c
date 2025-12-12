@@ -12,7 +12,7 @@ static const char *TAG = "VEML7700";
 #define VEML7700_CORR_C2  8.1488e-5
 #define VEML7700_CORR_C1  1.0023
 
-// Adresy rejestrów [cite: 403]
+// Adresy rejestrów
 #define REG_ALS_CONF_0 0x00
 #define REG_ALS_WH     0x01
 #define REG_ALS_WL     0x02
@@ -32,13 +32,13 @@ static esp_err_t write_register(veml7700_handle_t *handle, uint8_t reg, uint16_t
     data[0] = reg;
     data[1] = (uint8_t)(value & 0xFF);        // LSB
     data[2] = (uint8_t)((value >> 8) & 0xFF); // MSB
-    // Zapis Word (Command Code + Data Low + Data High) [cite: 190]
+    // Zapis Word (Command Code + Data Low + Data High)
     return i2c_master_write_to_device(handle->i2c_port, VEML7700_I2C_ADDR, data, 3, 1000 / portTICK_PERIOD_MS);
 }
 
 static esp_err_t read_register(veml7700_handle_t *handle, uint8_t reg, uint16_t *value) {
     uint8_t data[2];
-    // Zapis adresu rejestru (bez stopu), restart, odczyt 2 bajtów [cite: 241]
+    // Zapis adresu rejestru (bez stopu), restart, odczyt 2 bajtów
     esp_err_t err = i2c_master_write_read_device(handle->i2c_port, VEML7700_I2C_ADDR, &reg, 1, data, 2, 1000 / portTICK_PERIOD_MS);
     if (err == ESP_OK) {
         *value = (data[1] << 8) | data[0]; // Little Endian
@@ -126,7 +126,7 @@ esp_err_t veml7700_set_power_saving(veml7700_handle_t *handle, bool enable, veml
 esp_err_t veml7700_set_interrupts(veml7700_handle_t *handle, bool enable, uint16_t high_threshold, uint16_t low_threshold) {
     esp_err_t err;
 
-    // Najpierw ustawiamy progi (Rejestry 0x01, 0x02) [cite: 423, 427]
+    // Najpierw ustawiamy progi (Rejestry 0x01, 0x02)
     err = write_register(handle, REG_ALS_WH, high_threshold);
     if (err != ESP_OK) return err;
     
@@ -151,15 +151,15 @@ esp_err_t veml7700_get_interrupt_status(veml7700_handle_t *handle, veml7700_inte
 }
 
 esp_err_t veml7700_read_als_raw(veml7700_handle_t *handle, uint16_t *raw_als) {
-    return read_register(handle, REG_ALS, raw_als); // Rejestr 0x04 [cite: 433]
+    return read_register(handle, REG_ALS, raw_als); // Rejestr 0x04
 }
 
 esp_err_t veml7700_read_white_raw(veml7700_handle_t *handle, uint16_t *raw_white) {
-    return read_register(handle, REG_WHITE, raw_white); // Rejestr 0x05 [cite: 440]
+    return read_register(handle, REG_WHITE, raw_white); // Rejestr 0x05
 }
 
 // Funkcja obliczająca rozdzielczość na podstawie Tabeli "Basic Characteristics" i wzoru
-// Res = 0.0042 * (800 / IT) * (2 / Gain) [cite: 35, 469]
+// Res = 0.0042 * (800 / IT) * (2 / Gain)
 static double get_resolution(veml7700_gain_t gain, veml7700_it_t it) {
     double gain_factor = 1.0;
     // Mapowanie enum na mnożnik rzeczywisty
