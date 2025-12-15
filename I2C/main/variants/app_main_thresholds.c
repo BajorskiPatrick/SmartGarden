@@ -17,7 +17,7 @@
 
 #include "veml7700.h"
 
-// --- VARIANT: Power Saving pomiędzy odczytami ---
+// --- VARIANT: Thresholds + obsługa statusów przerwań ALS ---
 // Ten plik jest alternatywnym programem "app_main.c".
 // Użycie: podmień zawartość main/app_main.c na ten plik (albo zmień nazwę pliku na app_main.c)
 // i zbuduj/flashuj standardowo przez ESP-IDF.
@@ -36,8 +36,9 @@ static const char *TAG = "SMART_GARDEN";
 #define PUBLISH_INTERVAL_MS 10000
 #define QUEUE_SIZE 50
 
-// VEML7700: Power Saving Mode pomiędzy odczytami
-#define VEML7700_PSM_BETWEEN_READS_MODE  VEML7700_PSM_MODE_3
+// VEML7700: progi są w jednostkach RAW (rejestry ALS_WH/ALS_WL).
+#define VEML7700_ALS_LOW_THRESHOLD_RAW   100
+#define VEML7700_ALS_HIGH_THRESHOLD_RAW  10000
 
 bool water_alert_sent = false;
 bool is_mqtt_connected = false;
@@ -77,15 +78,44 @@ static esp_err_t i2c_master_init(void)
     return i2c_driver_install(i2c_master_port, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
 }
 
-static esp_err_t veml7700_set_power_saving_between_reads(veml7700_handle_t *sensor, bool enable)
+void send_alert(const char* type, const char* message);
+
+static esp_err_t veml7700_setup_thresholds(veml7700_handle_t *sensor)
 {
-    esp_err_t err = veml7700_set_power_saving(sensor, enable, VEML7700_PSM_BETWEEN_READS_MODE);
+    esp_err_t err = veml7700_set_interrupts(sensor,
+                                           true,
+                                           VEML7700_ALS_HIGH_THRESHOLD_RAW,
+                                           VEML7700_ALS_LOW_THRESHOLD_RAW);
+
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "VEML7700 Power Saving %s (mode=%d)", enable ? "ENABLED" : "DISABLED", (int)VEML7700_PSM_BETWEEN_READS_MODE);
+        ESP_LOGI(TAG, "VEML7700 thresholds configured (RAW): LOW=%u HIGH=%u",
+                 (unsigned)VEML7700_ALS_LOW_THRESHOLD_RAW,
+                 (unsigned)VEML7700_ALS_HIGH_THRESHOLD_RAW);
     } else {
-        ESP_LOGW(TAG, "VEML7700 Power Saving set failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "VEML7700 thresholds setup failed: %s", esp_err_to_name(err));
     }
+
     return err;
+}
+
+static void veml7700_handle_threshold_status(veml7700_handle_t *sensor)
+{
+    veml7700_interrupt_status_t status;
+    esp_err_t err = veml7700_get_interrupt_status(sensor, &status);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "VEML7700 interrupt status read failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    if (status.was_high_threshold) {
+        ESP_LOGW(TAG, "VEML7700: HIGH threshold exceeded");
+        send_alert("light", "HIGH_THRESHOLD_EXCEEDED");
+    }
+
+    if (status.was_low_threshold) {
+        ESP_LOGW(TAG, "VEML7700: LOW threshold exceeded");
+        send_alert("light", "LOW_THRESHOLD_EXCEEDED");
+    }
 }
 
 void get_water_level_status(int* water_ok) {
@@ -105,14 +135,11 @@ void get_sensor_data(int *soil_moisture, float *temp, float *humidity, float *pr
         xSemaphoreTake(veml_mutex, portMAX_DELAY);
     }
 
-    // Wyjście z trybu oszczędzania na czas pomiaru.
-    (void)veml7700_set_power_saving_between_reads(&veml_sensor, false);
-
     // Pojedynczy odczyt: read_lux samo sprawdza RAW, ewentualnie zmienia gain na przyszłość i zwraca lux.
     esp_err_t err = veml7700_read_lux(&veml_sensor, &lux_val);
 
-    // Wejście w tryb oszczędzania pomiędzy odczytami.
-    (void)veml7700_set_power_saving_between_reads(&veml_sensor, true);
+    // Odczyt statusu progów (polling rejestru ALS_INT) + reakcja.
+    veml7700_handle_threshold_status(&veml_sensor);
 
     if (veml_mutex != NULL) {
         xSemaphoreGive(veml_mutex);
@@ -227,17 +254,15 @@ void send_telemetry_json(telemetry_data_t *data) {
 void publish_telemetry_data(void) {
     // Zbieramy dane do struktury
     telemetry_data_t data;
-    data.timestamp = esp_log_timestamp(); // Zapisujemy czas pobrania próbki
+    data.timestamp = esp_log_timestamp();
 
     get_sensor_data(&data.soil_moisture, &data.temp, &data.humidity,
                     &data.pressure, &data.light_lux, &data.water_ok);
 
     if (is_mqtt_connected) {
-        // Mamy sieć - wysyłamy od razu
         check_water_level(&data.water_ok);
         send_telemetry_json(&data);
     } else {
-        // Brak sieci - wrzucamy do kolejki
         if (telemetry_queue != NULL) {
             if (xQueueSend(telemetry_queue, &data, 0) == pdTRUE) {
                 ESP_LOGW(TAG, "Brak połączenia! Dane zbuforowane (ts: %lu)", data.timestamp);
@@ -264,13 +289,11 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
         ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
         is_mqtt_connected = true;
 
-        // Po połączeniu subskrybujemy temat komend
         char topic_command[128];
         snprintf(topic_command, sizeof(topic_command), "garden/%s/%s/command", USER_ID, DEVICE_ID);
         esp_mqtt_client_subscribe(client, topic_command, 1);
         ESP_LOGI(TAG, "Zasubskrybowano komendy: %s", topic_command);
 
-        // Opróżnianie bufora z danymi telemetrycznymi po połączeniu
         if (telemetry_queue != NULL) {
             telemetry_data_t buffered_data;
             UBaseType_t items_waiting = uxQueueMessagesWaiting(telemetry_queue);
@@ -294,7 +317,6 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
     case MQTT_EVENT_DATA:
         ESP_LOGI(TAG, "Odebrano komendę na temat: %.*s", event->topic_len, event->topic);
 
-        // Parsowanie payloadu komendy
         cJSON *cmd_json = cJSON_ParseWithLength(event->data, event->data_len);
         if (cmd_json == NULL) {
             ESP_LOGE(TAG, "Błąd parsowania JSON komendy");
@@ -345,13 +367,11 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
 
 static void mqtt5_app_start(void)
 {
-    // Tworzymy kolejkę przed startem MQTT
     telemetry_queue = xQueueCreate(QUEUE_SIZE, sizeof(telemetry_data_t));
     if (telemetry_queue == NULL) {
         ESP_LOGE(TAG, "Nie udało się utworzyć kolejki bufora!");
     }
 
-    // Konfiguracja połączenia
     esp_mqtt_client_config_t mqtt5_cfg = {
         .broker.address.uri = CONFIG_BROKER_URL,
         .session.protocol_ver = MQTT_PROTOCOL_V_5,
@@ -370,7 +390,7 @@ static void mqtt5_app_start(void)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "[APP] Startuje Smart Garden Station (VARIANT: Power Saving)...");
+    ESP_LOGI(TAG, "[APP] Startuje Smart Garden Station (VARIANT: Thresholds)...");
 
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
@@ -379,21 +399,19 @@ void app_main(void)
     ESP_ERROR_CHECK(i2c_master_init());
     ESP_LOGI(TAG, "I2C zainicjowane.");
 
-    // Mutex dla czujnika VEML7700 (chroni transakcje I2C i stan handle przed przeplataniem).
     veml_mutex = xSemaphoreCreateMutex();
     if (veml_mutex == NULL) {
         ESP_LOGE(TAG, "Nie udało się utworzyć mutexa VEML7700 - równoległe pomiary mogą się przeplatać!");
     }
 
-    // Inicjalizacja czujnika VEML7700
     esp_err_t err = veml7700_init(&veml_sensor, I2C_MASTER_NUM);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "VEML7700 znaleziony i skonfigurowany!");
 
         (void)veml7700_set_config(&veml_sensor, VEML7700_GAIN_2, VEML7700_IT_100MS, VEML7700_PERS_1);
 
-        // Ustawiamy PSM na start, żeby pomiędzy odczytami czujnik oszczędzał energię.
-        (void)veml7700_set_power_saving_between_reads(&veml_sensor, true);
+        // Konfigurujemy progi + włączamy przerwania ALS.
+        (void)veml7700_setup_thresholds(&veml_sensor);
     } else {
         ESP_LOGE(TAG, "Nie wykryto VEML7700 (błąd: %s)", esp_err_to_name(err));
     }

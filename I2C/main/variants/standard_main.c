@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
-#include <math.h>
+#include <math.h> 
 #include "esp_system.h"
 #include "nvs_flash.h"
 #include "esp_event.h"
@@ -15,12 +15,7 @@
 #include "freertos/semphr.h"
 #include "driver/i2c.h"
 
-#include "veml7700.h"
-
-// --- VARIANT: Power Saving pomiędzy odczytami ---
-// Ten plik jest alternatywnym programem "app_main.c".
-// Użycie: podmień zawartość main/app_main.c na ten plik (albo zmień nazwę pliku na app_main.c)
-// i zbuduj/flashuj standardowo przez ESP-IDF.
+#include "veml7700.h" 
 
 static const char *TAG = "SMART_GARDEN";
 
@@ -34,10 +29,7 @@ static const char *TAG = "SMART_GARDEN";
 #define USER_ID "user_jan_banasik"
 #define DEVICE_ID "stacja_salon_01"
 #define PUBLISH_INTERVAL_MS 10000
-#define QUEUE_SIZE 50
-
-// VEML7700: Power Saving Mode pomiędzy odczytami
-#define VEML7700_PSM_BETWEEN_READS_MODE  VEML7700_PSM_MODE_3
+#define QUEUE_SIZE 50 
 
 bool water_alert_sent = false;
 bool is_mqtt_connected = false;
@@ -77,19 +69,8 @@ static esp_err_t i2c_master_init(void)
     return i2c_driver_install(i2c_master_port, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
 }
 
-static esp_err_t veml7700_set_power_saving_between_reads(veml7700_handle_t *sensor, bool enable)
-{
-    esp_err_t err = veml7700_set_power_saving(sensor, enable, VEML7700_PSM_BETWEEN_READS_MODE);
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "VEML7700 Power Saving %s (mode=%d)", enable ? "ENABLED" : "DISABLED", (int)VEML7700_PSM_BETWEEN_READS_MODE);
-    } else {
-        ESP_LOGW(TAG, "VEML7700 Power Saving set failed: %s", esp_err_to_name(err));
-    }
-    return err;
-}
-
 void get_water_level_status(int* water_ok) {
-    *water_ok = 1;
+    *water_ok = 1; 
 }
 
 void get_sensor_data(int *soil_moisture, float *temp, float *humidity, float *pressure, float *light_lux, int* water_ok) {
@@ -105,29 +86,24 @@ void get_sensor_data(int *soil_moisture, float *temp, float *humidity, float *pr
         xSemaphoreTake(veml_mutex, portMAX_DELAY);
     }
 
-    // Wyjście z trybu oszczędzania na czas pomiaru.
-    (void)veml7700_set_power_saving_between_reads(&veml_sensor, false);
+    veml7700_auto_adjust_gain(&veml_sensor);
 
-    // Pojedynczy odczyt: read_lux samo sprawdza RAW, ewentualnie zmienia gain na przyszłość i zwraca lux.
     esp_err_t err = veml7700_read_lux(&veml_sensor, &lux_val);
-
-    // Wejście w tryb oszczędzania pomiędzy odczytami.
-    (void)veml7700_set_power_saving_between_reads(&veml_sensor, true);
 
     if (veml_mutex != NULL) {
         xSemaphoreGive(veml_mutex);
     }
-
+    
     if (err == ESP_OK) {
         *light_lux = (float)lux_val;
         ESP_LOGI(TAG, "VEML7700 Lux: %.2f", lux_val);
     } else {
         ESP_LOGE(TAG, "Błąd odczytu VEML7700!");
-        *light_lux = -1.0;
+        *light_lux = -1.0; 
     }
 
     get_water_level_status(water_ok);
-
+    
     ESP_LOGI(TAG, "========== ODCZYT CZUJNIKÓW ==========");
     ESP_LOGI(TAG, "Wilgotność gleby:    %d %%", *soil_moisture);
     ESP_LOGI(TAG, "Temperatura:         %.2f °C", *temp);
@@ -140,7 +116,7 @@ void get_sensor_data(int *soil_moisture, float *temp, float *humidity, float *pr
 
 void send_alert(const char* type, const char* message) {
     if (client == NULL) return;
-
+    
     char topic_alert[128];
     snprintf(topic_alert, sizeof(topic_alert), "garden/%s/%s/alert", USER_ID, DEVICE_ID);
 
@@ -151,7 +127,7 @@ void send_alert(const char* type, const char* message) {
     cJSON_AddNumberToObject(root, "timestamp", esp_log_timestamp());
 
     char *json_string = cJSON_PrintUnformatted(root);
-
+    
     // Alert wysyłamy z QoS 2, aby mieć pewność dostarczenia
     esp_mqtt_client_publish(client, topic_alert, json_string, 0, 2, 0);
     ESP_LOGW(TAG, "Wysłano ALERT: %s", json_string);
@@ -186,7 +162,7 @@ void send_telemetry_json(telemetry_data_t *data) {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "device", DEVICE_ID);
     cJSON_AddStringToObject(root, "user", USER_ID);
-
+    
     // Dodajemy timestamp, żeby serwer wiedział, że to dane historyczne (z bufora)
     cJSON_AddNumberToObject(root, "timestamp", data->timestamp);
 
@@ -209,7 +185,7 @@ void send_telemetry_json(telemetry_data_t *data) {
 
     // Konwersja obiektu JSON na zwykły string przed wysłaniem
     char *json_string = cJSON_PrintUnformatted(root);
-
+    
     // Wysyłanie danych do brokera MQTT
     int msg_id = esp_mqtt_client_publish(client, topic_telemetry, json_string, 0, 1, 0);
     if (msg_id != -1) {
@@ -228,8 +204,8 @@ void publish_telemetry_data(void) {
     // Zbieramy dane do struktury
     telemetry_data_t data;
     data.timestamp = esp_log_timestamp(); // Zapisujemy czas pobrania próbki
-
-    get_sensor_data(&data.soil_moisture, &data.temp, &data.humidity,
+    
+    get_sensor_data(&data.soil_moisture, &data.temp, &data.humidity, 
                     &data.pressure, &data.light_lux, &data.water_ok);
 
     if (is_mqtt_connected) {
@@ -258,13 +234,14 @@ void publisher_task(void *pvParameters) {
 static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
     esp_mqtt_event_handle_t event = event_data;
-
+    
     switch ((esp_mqtt_event_id_t)event_id) {
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
         is_mqtt_connected = true;
-
-        // Po połączeniu subskrybujemy temat komend
+        
+        // Po połączeniu subskrybujemy temat komend - dzięki temu jak user wyślę komendę
+        // z aplikacji mobilnej na telefonie, to stacja ją odbierze
         char topic_command[128];
         snprintf(topic_command, sizeof(topic_command), "garden/%s/%s/command", USER_ID, DEVICE_ID);
         esp_mqtt_client_subscribe(client, topic_command, 1);
@@ -274,12 +251,12 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
         if (telemetry_queue != NULL) {
             telemetry_data_t buffered_data;
             UBaseType_t items_waiting = uxQueueMessagesWaiting(telemetry_queue);
-
+            
             if (items_waiting > 0) {
                 ESP_LOGI(TAG, "Wysyłanie %d zbuforowanych rekordów...", items_waiting);
                 while (xQueueReceive(telemetry_queue, &buffered_data, 0) == pdTRUE) {
                     send_telemetry_json(&buffered_data);
-                    vTaskDelay(pdMS_TO_TICKS(50));
+                    vTaskDelay(pdMS_TO_TICKS(50)); // Małe opóźnienie, żeby nie zapchać bufora sieciowego
                 }
                 ESP_LOGI(TAG, "Bufor opróżniony.");
             }
@@ -290,10 +267,10 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
         ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
         is_mqtt_connected = false;
         break;
-
+    
     case MQTT_EVENT_DATA:
         ESP_LOGI(TAG, "Odebrano komendę na temat: %.*s", event->topic_len, event->topic);
-
+        
         // Parsowanie payloadu komendy
         cJSON *cmd_json = cJSON_ParseWithLength(event->data, event->data_len);
         if (cmd_json == NULL) {
@@ -303,13 +280,17 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
 
         cJSON *cmd_item = cJSON_GetObjectItem(cmd_json, "cmd");
         if (cJSON_IsString(cmd_item) && (cmd_item->valuestring != NULL)) {
-
+            
+            // Komenda wymuszające pobranie ("odświeżenie") danych z sensorów
             if (strcmp(cmd_item->valuestring, "read_data") == 0) {
                 ESP_LOGI(TAG, "Komenda: Wymuszenie odczytu");
+                // Wywołujemy funkcję natychmiast
                 publish_telemetry_data();
             }
+            
+            // Komenda włączająca podlewanie na określony czas
             else if (strcmp(cmd_item->valuestring, "water_on") == 0) {
-                int duration = 5;
+                int duration = 5; // Domyślnie podlewamy 5 sekund
                 cJSON *dur_item = cJSON_GetObjectItem(cmd_json, "duration");
                 if (cJSON_IsNumber(dur_item)) {
                     duration = dur_item->valueint;
@@ -317,11 +298,16 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
                 ESP_LOGI(TAG, "Komenda: Podlewanie przez %d sekund", duration);
 
                 ESP_LOGI(TAG, "START PODLEWANIA (czas: %d s)...", duration);
-                vTaskDelay(pdMS_TO_TICKS(duration * 1000));
+                
+                // Symulacja pracy pompy (blokujemy task na czas trwania)
+                // Docelowo tutaj będzie włączane GPIO
+                vTaskDelay(pdMS_TO_TICKS(duration * 1000)); 
+                
+                // Wyłączenie pompy
                 ESP_LOGI(TAG, "KONIEC PODLEWANIA.");
-
+                
                 send_alert("info", "Watering finished");
-
+                
                 ESP_LOGI(TAG, "Weryfikacja stanu zbiornika po podlaniu...");
                 int water_status;
                 get_water_level_status(&water_status);
@@ -337,7 +323,7 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
     case MQTT_EVENT_ERROR:
         ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
         break;
-
+        
     default:
         break;
     }
@@ -353,29 +339,43 @@ static void mqtt5_app_start(void)
 
     // Konfiguracja połączenia
     esp_mqtt_client_config_t mqtt5_cfg = {
-        .broker.address.uri = CONFIG_BROKER_URL,
+        // Adres URL ustawiony jest w menuconfig
+        // Format URL: mqtt://użytkownik:hasło@adres_ip:port
+        .broker.address.uri = CONFIG_BROKER_URL, 
         .session.protocol_ver = MQTT_PROTOCOL_V_5,
         .network.disable_auto_reconnect = false,
 
-        .credentials.username = "admin",
+        // Dane logowania do Mosquitto
+        .credentials.username = "admin",  
         .credentials.authentication.password = "admin",
     };
 
+    // Inicjalizacja klienta MQTT do zmiennej zdefiniowanej globalnie
     client = esp_mqtt_client_init(&mqtt5_cfg);
-    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt5_event_handler, NULL);
-    esp_mqtt_client_start(client);
 
+    // Ustawienie obsługi zdarzeń MQTT - gdy cokolwiek stanie się z clientem, wywołane zostanie
+    // mqtt5_event_handler
+    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt5_event_handler, NULL);
+
+    // Połączenie z brokerem MQTT
+    esp_mqtt_client_start(client);
+    
+    // Uruchomienie zadania wysyłającego dane
     xTaskCreate(publisher_task, "publisher_task", 4096, NULL, 5, NULL);
 }
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "[APP] Startuje Smart Garden Station (VARIANT: Power Saving)...");
-
+    ESP_LOGI(TAG, "[APP] Startuje Smart Garden Station...");
+    
+    // Przygotowanie pamięci trwałej NVS
     ESP_ERROR_CHECK(nvs_flash_init());
+
+    // Start stosu sieciowego TCP/IP
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
+    //  Inicjalizacja magistrali I2C
     ESP_ERROR_CHECK(i2c_master_init());
     ESP_LOGI(TAG, "I2C zainicjowane.");
 
@@ -386,18 +386,18 @@ void app_main(void)
     }
 
     // Inicjalizacja czujnika VEML7700
+    // Używamy portu I2C_MASTER_NUM
     esp_err_t err = veml7700_init(&veml_sensor, I2C_MASTER_NUM);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "VEML7700 znaleziony i skonfigurowany!");
-
-        (void)veml7700_set_config(&veml_sensor, VEML7700_GAIN_2, VEML7700_IT_100MS, VEML7700_PERS_1);
-
-        // Ustawiamy PSM na start, żeby pomiędzy odczytami czujnik oszczędzał energię.
-        (void)veml7700_set_power_saving_between_reads(&veml_sensor, true);
+        
+        veml7700_set_config(&veml_sensor, VEML7700_GAIN_2, VEML7700_IT_100MS, VEML7700_PERS_1);
     } else {
         ESP_LOGE(TAG, "Nie wykryto VEML7700 (błąd: %s)", esp_err_to_name(err));
     }
 
+    // Łączenie z WiFi (konfigurowane w menuconfig)
+    // Nie wymuszamy połączenia - aplikacja będzie działać nawet bez WiFi
     esp_err_t wifi_err = example_connect();
     if (wifi_err != ESP_OK) {
         ESP_LOGW(TAG, "Nie udało się połączyć z WiFi - kontynuuję bez sieci");
