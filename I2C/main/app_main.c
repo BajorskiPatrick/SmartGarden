@@ -14,12 +14,10 @@
 #include "freertos/queue.h"
 #include "driver/i2c.h"
 
-// --- DOŁĄCZENIE WŁASNEJ BIBLIOTEKI ---
 #include "veml7700.h" 
 
 static const char *TAG = "SMART_GARDEN";
 
-// Konfiguracja I2C
 #define I2C_MASTER_SCL_IO           22      /*!< GPIO number used for I2C master clock */
 #define I2C_MASTER_SDA_IO           21      /*!< GPIO number used for I2C master data  */
 #define I2C_MASTER_NUM              0       /*!< I2C master i2c port number */
@@ -27,7 +25,6 @@ static const char *TAG = "SMART_GARDEN";
 #define I2C_MASTER_TX_BUF_DISABLE   0       /*!< I2C master doesn't need buffer */
 #define I2C_MASTER_RX_BUF_DISABLE   0       /*!< I2C master doesn't need buffer */
 
-// Konfiguracja użytkownika i urządzenia
 #define USER_ID "user_jan_banasik"
 #define DEVICE_ID "stacja_salon_01"
 #define PUBLISH_INTERVAL_MS 10000
@@ -74,21 +71,16 @@ void get_water_level_status(int* water_ok) {
     *water_ok = 1; 
 }
 
-// ZMIEIONA FUNKCJA POBIERANIA DANYCH
 void get_sensor_data(int *soil_moisture, float *temp, float *humidity, float *pressure, float *light_lux, int* water_ok) {
-    // Symulacja innych sensorów (jak wcześniej)
     *soil_moisture = 45 + (rand() % 10);
     *temp = 22.5 + ((float)(rand() % 20) / 10.0);
     *humidity = 40.0 + (rand() % 5);
     *pressure = 1013.0 + (rand() % 2);
 
-    // --- PRAWDZIWY ODCZYT VEML7700 ---
     double lux_val = 0.0;
     
-    // Opcjonalnie: automatyczne dopasowanie Gain przed odczytem
     veml7700_auto_adjust_gain(&veml_sensor);
     
-    // Odczyt właściwy
     esp_err_t err = veml7700_read_lux(&veml_sensor, &lux_val);
     
     if (err == ESP_OK) {
@@ -96,12 +88,11 @@ void get_sensor_data(int *soil_moisture, float *temp, float *humidity, float *pr
         ESP_LOGI(TAG, "VEML7700 Lux: %.2f", lux_val);
     } else {
         ESP_LOGE(TAG, "Błąd odczytu VEML7700!");
-        *light_lux = -1.0; // Wartość błędu
+        *light_lux = -1.0; 
     }
 
     get_water_level_status(water_ok);
     
-    // Wyświetlenie wszystkich odczytanych wartości
     ESP_LOGI(TAG, "========== ODCZYT CZUJNIKÓW ==========");
     ESP_LOGI(TAG, "Wilgotność gleby:    %d %%", *soil_moisture);
     ESP_LOGI(TAG, "Temperatura:         %.2f °C", *temp);
@@ -112,7 +103,6 @@ void get_sensor_data(int *soil_moisture, float *temp, float *humidity, float *pr
     ESP_LOGI(TAG, "=======================================");
 }
 
-// Funkcja wysyłająca alert, gdy poziom wody jest niski
 void send_alert(const char* type, const char* message) {
     if (client == NULL) return;
     
@@ -136,7 +126,6 @@ void send_alert(const char* type, const char* message) {
 }
 
 void check_water_level(int* water_status) {
-    // Logika alertu poziomu wody
     // Zakładamy: 1 = OK, 0 = BRAK WODY (Low Level)
     if (*water_status == 0) {
         if (!water_alert_sent) {
@@ -217,7 +206,6 @@ void publish_telemetry_data(void) {
     }
 }
 
-// Task odpowiedzialny za cykliczne wysyłanie danych
 void publisher_task(void *pvParameters) {
     while (1) {
         publish_telemetry_data();
@@ -369,11 +357,11 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    // 1. Inicjalizacja magistrali I2C
+    //  Inicjalizacja magistrali I2C
     ESP_ERROR_CHECK(i2c_master_init());
     ESP_LOGI(TAG, "I2C zainicjowane.");
 
-    // 2. Inicjalizacja czujnika VEML7700
+    // Inicjalizacja czujnika VEML7700
     // Używamy portu I2C_MASTER_NUM
     esp_err_t err = veml7700_init(&veml_sensor, I2C_MASTER_NUM);
     if (err == ESP_OK) {
