@@ -12,6 +12,7 @@
 #include "mqtt_client.h"
 #include "cJSON.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "driver/i2c.h"
 
 #include "veml7700.h" 
@@ -37,6 +38,7 @@ esp_mqtt_client_handle_t client = NULL;
 
 // Uchwyt do naszego czujnika
 veml7700_handle_t veml_sensor;
+static SemaphoreHandle_t veml_mutex = NULL;
 
 typedef struct {
     int soil_moisture;
@@ -78,10 +80,19 @@ void get_sensor_data(int *soil_moisture, float *temp, float *humidity, float *pr
     *pressure = 1013.0 + (rand() % 2);
 
     double lux_val = 0.0;
-    
+
+    // Blokujemy równoległe requesty/pomiary: VEML7700 + I2C muszą być serializowane.
+    if (veml_mutex != NULL) {
+        xSemaphoreTake(veml_mutex, portMAX_DELAY);
+    }
+
     veml7700_auto_adjust_gain(&veml_sensor);
-    
+
     esp_err_t err = veml7700_read_lux(&veml_sensor, &lux_val);
+
+    if (veml_mutex != NULL) {
+        xSemaphoreGive(veml_mutex);
+    }
     
     if (err == ESP_OK) {
         *light_lux = (float)lux_val;
@@ -156,11 +167,18 @@ void send_telemetry_json(telemetry_data_t *data) {
     cJSON_AddNumberToObject(root, "timestamp", data->timestamp);
 
     cJSON *sensors = cJSON_CreateObject();
-    cJSON_AddNumberToObject(sensors, "soil_moisture_pct", data->soil_moisture);
-    cJSON_AddNumberToObject(sensors, "air_temperature_c", data->temp);
-    cJSON_AddNumberToObject(sensors, "air_humidity_pct", data->humidity);
-    cJSON_AddNumberToObject(sensors, "pressure_hpa", data->pressure);
-    cJSON_AddNumberToObject(sensors, "light_lux", data->light_lux);
+    char temp_str[8], hum_str[8], press_str[8], lux_str[8], soil_str[8];
+    snprintf(temp_str, sizeof(temp_str), "%.2f", data->temp);
+    snprintf(hum_str, sizeof(hum_str), "%.2f", data->humidity);
+    snprintf(press_str, sizeof(press_str), "%.2f", data->pressure);
+    snprintf(lux_str, sizeof(lux_str), "%.2f", data->light_lux);
+    snprintf(soil_str, sizeof(soil_str), "%d", data->soil_moisture);
+
+    cJSON_AddStringToObject(sensors, "soil_moisture_pct", soil_str);
+    cJSON_AddStringToObject(sensors, "air_temperature_c", temp_str);
+    cJSON_AddStringToObject(sensors, "air_humidity_pct", hum_str);
+    cJSON_AddStringToObject(sensors, "pressure_hpa", press_str);
+    cJSON_AddStringToObject(sensors, "light_lux", lux_str);
     cJSON_AddBoolToObject(sensors, "water_tank_ok", data->water_ok);
 
     cJSON_AddItemToObject(root, "sensors", sensors);
@@ -360,6 +378,12 @@ void app_main(void)
     //  Inicjalizacja magistrali I2C
     ESP_ERROR_CHECK(i2c_master_init());
     ESP_LOGI(TAG, "I2C zainicjowane.");
+
+    // Mutex dla czujnika VEML7700 (chroni transakcje I2C i stan handle przed przeplataniem).
+    veml_mutex = xSemaphoreCreateMutex();
+    if (veml_mutex == NULL) {
+        ESP_LOGE(TAG, "Nie udało się utworzyć mutexa VEML7700 - równoległe pomiary mogą się przeplatać!");
+    }
 
     // Inicjalizacja czujnika VEML7700
     // Używamy portu I2C_MASTER_NUM

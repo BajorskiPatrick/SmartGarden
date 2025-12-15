@@ -84,16 +84,6 @@ try:
             cmd_payload = json.dumps({"cmd": "read_data"})
             client.publish(TOPIC_COMMAND, cmd_payload)
 
-        # Co 35 sekund wysyła komendę "podlej"
-        if cycle_counter % 35 == 0:
-            duration = random.randint(3, 8)
-            print(f"\n[{time.strftime('%H:%M:%S')}] Wysyłam komendę: water_on ({duration}s)")
-            cmd_payload = json.dumps({
-                "cmd": "water_on", 
-                "duration": duration
-            })
-            client.publish(TOPIC_COMMAND, cmd_payload)
-
 except KeyboardInterrupt:
     print("\nZatrzymywanie klienta...")
     client.loop_stop()
