@@ -16,6 +16,7 @@
 #include "esp_bt_defs.h"
 #include "esp_bt_main.h"
 #include "driver/gpio.h"
+#include "esp_timer.h"
 
 #define LOG_TAG "CUSTOM_PROV"
 
@@ -47,9 +48,30 @@ static char temp_pass[64] = {0};
 #define NVS_KEY_PASS "pass"
 
 // --- Deklaracje funkcji ---
-void start_ble_provisioning();
-void stop_ble_provisioning();
-void connect_wifi();
+static void start_provisioning_window(void);
+static void stop_ble_provisioning(void);
+static void close_provisioning_window(bool provisioning_completed);
+void start_ble_stack(void);
+void wifi_init_sta(void);
+void connect_wifi(const char* ssid, const char* pass);
+
+// ==========================================================
+// PROVISIONING: OKNO CZASOWE (SECURITY)
+// ==========================================================
+#define PROV_ADV_TIMEOUT_MS (2 * 60 * 1000)
+
+static esp_timer_handle_t prov_timeout_timer = NULL;
+static bool provisioning_window_open = false;
+static bool provisioning_done = false;
+static bool ble_stack_started = false;
+
+static void provisioning_timeout_cb(void *arg) {
+    (void)arg;
+    if (provisioning_window_open && !provisioning_done) {
+        ESP_LOGW(LOG_TAG, "Provisioning timeout (%d ms). Stopping advertising...", PROV_ADV_TIMEOUT_MS);
+        close_provisioning_window(false);
+    }
+}
 
 // ==========================================================
 // OBSŁUGA NVS (Pamięć trwała)
@@ -170,7 +192,9 @@ static esp_ble_adv_data_t adv_data = {
 static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
     switch (event) {
     case ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT:
-        esp_ble_gap_start_advertising(&adv_params);
+        if (provisioning_window_open && !provisioning_done) {
+            esp_ble_gap_start_advertising(&adv_params);
+        }
         break;
     case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
         if (param->adv_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
@@ -289,7 +313,9 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     case ESP_GATTS_DISCONNECT_EVT:
         is_connected = false;
         ESP_LOGI(LOG_TAG, "BLE Disconnected");
-        esp_ble_gap_start_advertising(&adv_params);
+        if (provisioning_window_open && !provisioning_done) {
+            esp_ble_gap_start_advertising(&adv_params);
+        }
         break;
 
     case ESP_GATTS_WRITE_EVT: {
@@ -308,6 +334,8 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             // Sprawdź czy użytkownik wysłał '1' (0x31)
             if (param->write.len > 0 && param->write.value[0] == '1') {
                 ESP_LOGI(LOG_TAG, "Apply command received. Saving to NVS...");
+                provisioning_done = true;
+                close_provisioning_window(true);
                 save_wifi_credentials(temp_ssid, temp_pass);
                 ESP_LOGI(LOG_TAG, "Credentials saved. Rebooting to apply...");
                 esp_restart();
@@ -339,6 +367,61 @@ void start_ble_stack() {
 }
 
 // ==========================================================
+// START/STOP ADVERTISING (PROVISIONING WINDOW)
+// ==========================================================
+
+static void close_provisioning_window(bool provisioning_completed) {
+    provisioning_window_open = false;
+    provisioning_done = provisioning_completed;
+
+    // Zatrzymaj timer, jeśli działa
+    if (prov_timeout_timer) {
+        esp_timer_stop(prov_timeout_timer);
+    }
+
+    // Zatrzymaj advertising (jeśli był uruchomiony)
+    stop_ble_provisioning();
+}
+
+static void start_provisioning_window(void) {
+    provisioning_done = false;
+    provisioning_window_open = true;
+
+    // Utwórz timer (jednorazowy) jeśli jeszcze nie istnieje
+    if (prov_timeout_timer == NULL) {
+        esp_timer_create_args_t timer_args = {
+            .callback = &provisioning_timeout_cb,
+            .arg = NULL,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "prov_adv_timeout",
+            .skip_unhandled_events = true,
+        };
+        ESP_ERROR_CHECK(esp_timer_create(&timer_args, &prov_timeout_timer));
+    }
+
+    // Restart timera okna provisioningu
+    esp_timer_stop(prov_timeout_timer);
+    ESP_ERROR_CHECK(esp_timer_start_once(prov_timeout_timer, (int64_t)PROV_ADV_TIMEOUT_MS * 1000));
+
+    // Jeśli BLE stos nie wystartował, startujemy go (advertising ruszy po ADV_DATA_SET_COMPLETE_EVT)
+    if (!ble_stack_started) {
+        ble_stack_started = true;
+        start_ble_stack();
+        ESP_LOGI(LOG_TAG, "Provisioning window opened (BLE init). Advertising will start shortly...");
+        return;
+    }
+
+    // Jeśli stos już działa, to po prostu uruchom advertising ponownie
+    ESP_LOGI(LOG_TAG, "Provisioning window opened. Starting advertising...");
+    esp_ble_gap_start_advertising(&adv_params);
+}
+
+static void stop_ble_provisioning(void) {
+    // esp_ble_gap_stop_advertising() zwróci błąd jeśli advertising nie działa; ignorujemy.
+    esp_ble_gap_stop_advertising();
+}
+
+// ==========================================================
 // MONITOROWANIE PRZYCISKU (Factory Reset / Re-provision)
 // ==========================================================
 void button_task(void *pvParameter) {
@@ -347,12 +430,28 @@ void button_task(void *pvParameter) {
 
     while (1) {
         if (gpio_get_level(BUTTON_GPIO) == 0) { // Pressed
-            vTaskDelay(pdMS_TO_TICKS(3000)); // Czekaj 3 sekundy
-            if (gpio_get_level(BUTTON_GPIO) == 0) { // Dalej wciśnięty
-                ESP_LOGW(LOG_TAG, "Button held! Clearing NVS and restarting...");
-                clear_wifi_credentials();
-                esp_restart();
+            int64_t press_start_us = esp_timer_get_time();
+
+            // Czekaj aż puści albo minie 3s
+            while (gpio_get_level(BUTTON_GPIO) == 0) {
+                int64_t held_ms = (esp_timer_get_time() - press_start_us) / 1000;
+                if (held_ms >= 3000) {
+                    ESP_LOGW(LOG_TAG, "Button held! Clearing NVS and restarting...");
+                    clear_wifi_credentials();
+                    esp_restart();
+                }
+                vTaskDelay(pdMS_TO_TICKS(20));
             }
+
+            // Krótkie kliknięcie: otwórz okno provisioningu na 2 min
+            int64_t press_ms = (esp_timer_get_time() - press_start_us) / 1000;
+            if (press_ms < 3000) {
+                ESP_LOGI(LOG_TAG, "BOOT clicked. Starting provisioning window (%d ms)...", PROV_ADV_TIMEOUT_MS);
+                start_provisioning_window();
+            }
+
+            // Debounce
+            vTaskDelay(pdMS_TO_TICKS(200));
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
@@ -384,8 +483,8 @@ void app_main(void) {
         wifi_init_sta();
         connect_wifi(ssid, pass);
     } else {
-        // Brak konfiguracji - uruchamiamy BLE Provisioning
-        ESP_LOGI(LOG_TAG, "No WiFi credentials found. Starting BLE Provisioning...");
-        start_ble_stack();
+        // Brak konfiguracji - otwieramy okno provisioningu (2 min) i uruchamiamy advertising
+        ESP_LOGI(LOG_TAG, "No WiFi credentials found. Opening provisioning window...");
+        start_provisioning_window();
     }
 }
