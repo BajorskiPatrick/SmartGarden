@@ -8,6 +8,7 @@
 #include <esp_log.h>
 #include <nvs_flash.h>
 #include <driver/gpio.h>
+#include "qrcode.h"
 
 #include <wifi_provisioning/manager.h>
 #include <wifi_provisioning/scheme_ble.h>
@@ -207,27 +208,54 @@ void app_main(void)
 
     if (!provisioned) {
         ESP_LOGI(TAG, "Urządzenie nieskonfigurowane. Uruchamianie BLE...");
-        // Ustawiamy flagę, choć event handler zrobi to też przy WIFI_PROV_START
         s_is_provisioning = true;
 
         char service_name[12];
         get_device_service_name(service_name, sizeof(service_name));
 
-        /* Security 1 (Proof of Possession) - Proste i bezpieczne */
+        /* --- ZMIANA: GENEROWANIE HASŁA (OPCJA A) --- */
+        
+        /* Pobieramy MAC adres, aby wygenerować unikalne hasło */
+        uint8_t eth_mac[6];
+        esp_wifi_get_mac(WIFI_IF_STA, eth_mac);
+        
+        /* Generujemy hasło: 4 ostatnie bajty MAC (8 znaków HEX). 
+           Np. dla MAC AA:BB:CC:11:22:33 hasło to "CC112233" */
+        char pop[9]; 
+        snprintf(pop, sizeof(pop), "%02X%02X%02X%02X", eth_mac[2], eth_mac[3], eth_mac[4], eth_mac[5]);
+
         wifi_prov_security_t security = WIFI_PROV_SECURITY_1;
-        const char *pop = "Haslo123"; // Kod PoP, który trzeba wpisać w aplikacji
+        /* Używamy wygenerowanego bufora 'pop' zamiast stałego ciągu znaków */
         wifi_prov_security1_params_t *sec_params = (void *)pop;
-        const char *service_key = NULL; // Nieużywane przy BLE
+        const char *service_key = NULL;
 
         /* Uruchomienie provisioningu */
         ESP_ERROR_CHECK(wifi_prov_mgr_start_provisioning(security, (const void *) sec_params, service_name, service_key));
         
         ESP_LOGI(TAG, "Nazwa urządzenia BLE: %s", service_name);
-        ESP_LOGI(TAG, "Proof of Possession (PoP): %s", pop);
+        ESP_LOGW(TAG, "Proof of Possession (PoP): %s", pop); // Używam LOGW żeby rzuciło się w oczy
+
+        /* --- ZMIANA: GENEROWANIE KODU QR --- */
+        
+        /* Tworzymy payload w formacie JSON zrozumiałym dla aplikacji ESP Provisioning */
+        /* Format: {"ver":"v1","name":"<service_name>","pop":"<pop>","transport":"ble"} */
+        char payload[150];
+        snprintf(payload, sizeof(payload), 
+            "{\"ver\":\"v1\",\"name\":\"%s\",\"pop\":\"%s\",\"transport\":\"ble\"}",
+            service_name, pop);
+
+        ESP_LOGI(TAG, "Zeskanuj poniższy kod QR w aplikacji mobilnej:");
+        
+        /* Generowanie i wyświetlanie QR w konsoli (ASCII art) */
+        esp_qrcode_config_t cfg = ESP_QRCODE_CONFIG_DEFAULT();
+        esp_qrcode_generate(&cfg, payload);
+        
+        /* ----------------------------------- */
+
     } else {
         ESP_LOGI(TAG, "Urządzenie skonfigurowane. Łączenie z WiFi...");
         s_is_provisioning = false;
-        wifi_prov_mgr_deinit(); // Nie potrzebujemy managera, jeśli już mamy config
+        wifi_prov_mgr_deinit();
         wifi_init_sta();
     }
 
