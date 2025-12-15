@@ -72,45 +72,139 @@ typedef struct {
     bool shutdown;
 } veml7700_handle_t;
 
-// Inicjalizacja sterownika.
- 
+/**
+ * @brief Inicjalizuje sterownik VEML7700.
+ *
+ * Ustawia domyślną konfigurację czujnika oraz weryfikuje identyfikator układu.
+ *
+ * @param handle Wskaźnik na uchwyt czujnika (musi wskazywać na poprawną pamięć).
+ * @param i2c_port Port I2C skonfigurowany w aplikacji (np. I2C_NUM_0).
+ *
+ * @return ESP_OK w przypadku powodzenia; w przeciwnym razie kod błędu ESP-IDF.
+ */
 esp_err_t veml7700_init(veml7700_handle_t *handle, i2c_port_t i2c_port);
 
- // Sprawdza ID urządzenia (Rejestr 0x07).
-
+/**
+ * @brief Odczytuje i weryfikuje ID urządzenia (Rejestr 0x07).
+ *
+ * @param handle Uchwyt czujnika.
+ *
+ * @return ESP_OK jeśli odczyt i weryfikacja ID zakończyły się sukcesem;
+ *         w przeciwnym razie kod błędu (np. ESP_ERR_INVALID_RESPONSE).
+ */
 esp_err_t veml7700_read_id(veml7700_handle_t *handle);
 
- // Ustawia główne parametry pomiaru.
-
+/**
+ * @brief Ustawia główne parametry pomiaru (Gain, Integration Time, Persistence).
+ *
+ * @param handle Uchwyt czujnika.
+ * @param gain Wzmocnienie wejściowe (czułość).
+ * @param it Czas integracji.
+ * @param pers Persistence dla przerwań ALS (ile kolejnych pomiarów poza progiem).
+ *
+ * @return ESP_OK w przypadku powodzenia; w przeciwnym razie kod błędu.
+ */
 esp_err_t veml7700_set_config(veml7700_handle_t *handle, veml7700_gain_t gain, veml7700_it_t it, veml7700_pers_t pers);
 
- // Włącza lub wyłącza tryb Shutdown (ALS_SD).
-
+/**
+ * @brief Włącza lub wyłącza tryb Shutdown (ALS_SD).
+ *
+ * @param handle Uchwyt czujnika.
+ * @param shutdown true = wyłącza ALS (shutdown), false = włącza pomiary.
+ *
+ * @return ESP_OK w przypadku powodzenia; w przeciwnym razie kod błędu.
+ */
 esp_err_t veml7700_set_shutdown(veml7700_handle_t *handle, bool shutdown);
 
- // Konfiguracja Power Saving Mode (Rejestr 0x03).
-
+/**
+ * @brief Konfiguruje Power Saving Mode (Rejestr 0x03).
+ *
+ * @param handle Uchwyt czujnika.
+ * @param enable true = włącza PSM, false = wyłącza PSM.
+ * @param mode Tryb PSM (wpływa na przebieg pomiarów wg noty).
+ *
+ * @return ESP_OK w przypadku powodzenia; w przeciwnym razie kod błędu.
+ */
 esp_err_t veml7700_set_power_saving(veml7700_handle_t *handle, bool enable, veml7700_psm_mode_t mode);
 
- // Konfiguracja przerwań (Progi i Enable).
-
+/**
+ * @brief Konfiguruje przerwania ALS (progi i włączenie).
+ *
+ * @param handle Uchwyt czujnika.
+ * @param enable true = włącza przerwania ALS, false = wyłącza.
+ * @param high_threshold Próg górny (RAW) dla przerwania.
+ * @param low_threshold Próg dolny (RAW) dla przerwania.
+ *
+ * @return ESP_OK w przypadku powodzenia; w przeciwnym razie kod błędu.
+ */
 esp_err_t veml7700_set_interrupts(veml7700_handle_t *handle, bool enable, uint16_t high_threshold, uint16_t low_threshold);
 
- // Odczytuje status przerwania (Rejestr 0x06).
-
+/**
+ * @brief Odczytuje status przerwań (Rejestr 0x06).
+ *
+ * @param handle Uchwyt czujnika.
+ * @param status Wyjście: struktura, do której zostanie wpisany status przerwań.
+ *
+ * @return ESP_OK w przypadku powodzenia; w przeciwnym razie kod błędu.
+ */
 esp_err_t veml7700_get_interrupt_status(veml7700_handle_t *handle, veml7700_interrupt_status_t *status);
 
- // Odczyt surowej wartości ALS (Rejestr 0x04).
+/**
+ * @brief Odczytuje surową wartość ALS (Rejestr 0x04).
+ *
+ * @param handle Uchwyt czujnika.
+ * @param raw_als Wyjście: odebrana surowa wartość ALS.
+ *
+ * @return ESP_OK w przypadku powodzenia; w przeciwnym razie kod błędu.
+ */
 esp_err_t veml7700_read_als_raw(veml7700_handle_t *handle, uint16_t *raw_als);
 
- // Odczyt surowej wartości WHITE (Rejestr 0x05).
+/**
+ * @brief Odczytuje surową wartość WHITE (Rejestr 0x05).
+ *
+ * @param handle Uchwyt czujnika.
+ * @param raw_white Wyjście: odebrana surowa wartość WHITE.
+ *
+ * @return ESP_OK w przypadku powodzenia; w przeciwnym razie kod błędu.
+ */
 esp_err_t veml7700_read_white_raw(veml7700_handle_t *handle, uint16_t *raw_white);
 
- // Zwraca wartość natężenia światła w luksach [lx].
- // Przelicza wartość surową uwzględniając aktualny Gain i Integration Time.
+/**
+ * @brief Konwertuje surowe ALS (RAW) na luks [lx].
+ *
+ * Ta funkcja nie wykonuje odczytu z I2C – tylko przelicza.
+ *
+ * @param raw Surowa wartość ALS (np. z veml7700_read_als_raw()).
+ * @param gain Gain użyty podczas tego pomiaru.
+ * @param it Integration time użyty podczas tego pomiaru.
+ * @param lux Wyjście: przeliczona wartość w luksach.
+ *
+ * @return ESP_OK w przypadku powodzenia; w przeciwnym razie kod błędu (np. ESP_ERR_INVALID_ARG).
+ */
+esp_err_t veml7700_convert_als_raw_to_lux(uint16_t raw, veml7700_gain_t gain, veml7700_it_t it, double *lux);
+
+/**
+ * @brief Odczytuje natężenie światła w luksach [lx].
+ *
+ * Wykonuje pojedynczy odczyt RAW ALS. Jeśli RAW jest poza zakresem, ustawia Gain na przyszłość
+ * (loguje ostrzeżenie o niepewności), ale zawsze konwertuje aktualny RAW i zwraca wynik
+ * bez ponownego odczytu.
+ *
+ * @param handle Uchwyt czujnika.
+ * @param lux Wyjście: przeliczona wartość w luksach.
+ *
+ * @return ESP_OK w przypadku powodzenia; w przeciwnym razie kod błędu.
+ */
 esp_err_t veml7700_read_lux(veml7700_handle_t *handle, double *lux);
 
- // Rozbudowany Auto-Gain.
+/**
+ * @brief Automatycznie dopasowuje Gain na podstawie aktualnego odczytu RAW ALS.
+ *
+ * @param handle Uchwyt czujnika.
+ *
+ * @return ESP_OK jeśli konfiguracja nie wymagała zmiany lub zmiana została zastosowana;
+ *         w przeciwnym razie kod błędu.
+ */
 esp_err_t veml7700_auto_adjust_gain(veml7700_handle_t *handle);
 
 #ifdef __cplusplus

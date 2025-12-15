@@ -81,6 +81,7 @@ void get_sensor_data(int *soil_moisture, float *temp, float *humidity, float *pr
 
     double lux_val = 0.0;
 
+<<<<<<< Updated upstream
     // Blokujemy równoległe requesty/pomiary: VEML7700 + I2C muszą być serializowane.
     if (veml_mutex != NULL) {
         xSemaphoreTake(veml_mutex, portMAX_DELAY);
@@ -88,6 +89,8 @@ void get_sensor_data(int *soil_moisture, float *temp, float *humidity, float *pr
 
     veml7700_auto_adjust_gain(&veml_sensor);
 
+=======
+>>>>>>> Stashed changes
     esp_err_t err = veml7700_read_lux(&veml_sensor, &lux_val);
 
     if (veml_mutex != NULL) {

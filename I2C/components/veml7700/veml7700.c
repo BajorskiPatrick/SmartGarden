@@ -172,20 +172,37 @@ static double get_resolution(veml7700_gain_t gain, veml7700_it_t it) {
     return 0.0042 * (800.0 / it_ms) * (2.0 / gain_factor);
 }
 
-esp_err_t veml7700_read_lux(veml7700_handle_t *handle, double *lux) {
-    uint16_t raw;
-    esp_err_t err = veml7700_read_als_raw(handle, &raw);
-    if (err != ESP_OK) return err;
+static veml7700_gain_t get_auto_gain_for_raw(veml7700_gain_t current_gain, uint16_t raw) {
+    veml7700_gain_t new_gain = current_gain;
 
-    //  Obliczenie podstawowej rozdzielczości (Gain/IT)
-    double resolution = get_resolution(handle->gain, handle->integration_time);
-    
-    //  Wstępne obliczenie luksów 
+    // Progi histerezy dla auto-gain:
+    // Dolny: < 100 zliczeń (zbyt mała precyzja)
+    // Górny: > 10000 zliczeń (ryzyko nasycenia)
+    if (raw > 10000) {
+        // Zmniejszamy czułość (kolejność: x2 -> x1 -> x1/4 -> x1/8)
+        if (current_gain == VEML7700_GAIN_2) new_gain = VEML7700_GAIN_1;
+        else if (current_gain == VEML7700_GAIN_1) new_gain = VEML7700_GAIN_1_4;
+        else if (current_gain == VEML7700_GAIN_1_4) new_gain = VEML7700_GAIN_1_8;
+    } else if (raw < 100) {
+        // Zwiększamy czułość (kolejność: x1/8 -> x1/4 -> x1 -> x2)
+        if (current_gain == VEML7700_GAIN_1_8) new_gain = VEML7700_GAIN_1_4;
+        else if (current_gain == VEML7700_GAIN_1_4) new_gain = VEML7700_GAIN_1;
+        else if (current_gain == VEML7700_GAIN_1) new_gain = VEML7700_GAIN_2;
+    }
+
+    return new_gain;
+}
+
+esp_err_t veml7700_convert_als_raw_to_lux(uint16_t raw, veml7700_gain_t gain, veml7700_it_t it, double *lux) {
+    if (lux == NULL) return ESP_ERR_INVALID_ARG;
+
+    // Obliczenie podstawowej rozdzielczości (Gain/IT)
+    double resolution = get_resolution(gain, it);
+
+    // Wstępne obliczenie luksów
     double lux_linear = raw * resolution;
 
-    // Korekcja nieliniowości 
-    // Sensor wykazuje nieliniowość przy wyższych wartościach strumienia świetlnego.
-    
+    // Korekcja nieliniowości
     double lux_corrected = (VEML7700_CORR_C4 * pow(lux_linear, 4)) +
                            (VEML7700_CORR_C3 * pow(lux_linear, 3)) +
                            (VEML7700_CORR_C2 * pow(lux_linear, 2)) +
@@ -193,6 +210,41 @@ esp_err_t veml7700_read_lux(veml7700_handle_t *handle, double *lux) {
 
     *lux = lux_corrected;
     return ESP_OK;
+}
+
+esp_err_t veml7700_read_lux(veml7700_handle_t *handle, double *lux) {
+    if (handle == NULL || lux == NULL) return ESP_ERR_INVALID_ARG;
+
+    // Snapshot konfiguracji użytej do tego pomiaru (ważne: po auto-gain zmieniamy config na przyszłość)
+    veml7700_gain_t measurement_gain = handle->gain;
+    veml7700_it_t measurement_it = handle->integration_time;
+    veml7700_pers_t measurement_pers = handle->persistence;
+
+    uint16_t raw;
+    esp_err_t err = veml7700_read_als_raw(handle, &raw);
+    if (err != ESP_OK) return err;
+
+    // Jeżeli RAW jest poza zakresem, ustawiamy gain na przyszłość, ale NIE robimy ponownego odczytu.
+    veml7700_gain_t new_gain = get_auto_gain_for_raw(measurement_gain, raw);
+    if (new_gain != measurement_gain) {
+        esp_err_t cfg_err = veml7700_set_config(handle, new_gain, measurement_it, measurement_pers);
+        if (cfg_err == ESP_OK) {
+            ESP_LOGW(TAG,
+                     "Lux measurement uncertain (raw=%u out of range); adjusted gain for next read (%d -> %d). Returning converted value from current raw.",
+                     (unsigned)raw, (int)measurement_gain, (int)new_gain);
+        } else {
+            ESP_LOGW(TAG,
+                     "Lux measurement uncertain (raw=%u out of range); failed to adjust gain (%d -> %d): %s. Returning converted value from current raw.",
+                     (unsigned)raw, (int)measurement_gain, (int)new_gain, esp_err_to_name(cfg_err));
+        }
+    } else if (raw > 10000 || raw < 100) {
+        // Poza zakresem, ale gain już na granicy
+        ESP_LOGW(TAG,
+                 "Lux measurement uncertain (raw=%u out of range); gain already at limit (%d). Returning converted value from current raw.",
+                 (unsigned)raw, (int)measurement_gain);
+    }
+
+    return veml7700_convert_als_raw_to_lux(raw, measurement_gain, measurement_it, lux);
 }
 
 esp_err_t veml7700_auto_adjust_gain(veml7700_handle_t *handle) {
@@ -205,20 +257,7 @@ esp_err_t veml7700_auto_adjust_gain(veml7700_handle_t *handle) {
     // Górny: > 10000 zliczeń (ryzyko nasycenia)
     
     veml7700_gain_t current_gain = handle->gain;
-    veml7700_gain_t new_gain = current_gain;
-
-    if (raw > 10000) {
-        // Zmniejszamy czułość (kolejność: x2 -> x1 -> x1/4 -> x1/8)
-        if (current_gain == VEML7700_GAIN_2) new_gain = VEML7700_GAIN_1;
-        else if (current_gain == VEML7700_GAIN_1) new_gain = VEML7700_GAIN_1_4;
-        else if (current_gain == VEML7700_GAIN_1_4) new_gain = VEML7700_GAIN_1_8;
-    } 
-    else if (raw < 100) {
-        // Zwiększamy czułość (kolejność: x1/8 -> x1/4 -> x1 -> x2)
-        if (current_gain == VEML7700_GAIN_1_8) new_gain = VEML7700_GAIN_1_4;
-        else if (current_gain == VEML7700_GAIN_1_4) new_gain = VEML7700_GAIN_1;
-        else if (current_gain == VEML7700_GAIN_1) new_gain = VEML7700_GAIN_2;
-    }
+    veml7700_gain_t new_gain = get_auto_gain_for_raw(current_gain, raw);
 
     if (new_gain != current_gain) {
         // Aplikuj zmianę zachowując pozostałe parametry (IT, Persistence)
