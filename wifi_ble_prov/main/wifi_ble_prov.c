@@ -38,6 +38,14 @@ static uint16_t connection_id = 0;
 static bool is_connected = false;
 static uint16_t ssid_handle, pass_handle, ctrl_handle;
 
+// NOWE: Uchwyty dla deskryptorów (opisów)
+static uint16_t ssid_descr_handle = 0;
+static uint16_t pass_descr_handle = 0;
+static uint16_t ctrl_descr_handle = 0;
+
+// NOWE: Zmienna pomocnicza do śledzenia inicjalizacji
+static uint16_t current_creating_char_uuid = 0;
+
 // Bufory tymczasowe na dane z BLE
 static char temp_ssid[32] = {0};
 static char temp_pass[64] = {0};
@@ -212,11 +220,9 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
 static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param) {
     switch (event) {
     case ESP_GATTS_REG_EVT: {
-        // Po rejestracji aplikacji, konfigurujemy serwis
-        esp_ble_gap_set_device_name("ESP32_PROV_CUSTOM");
+        esp_ble_gap_set_device_name("Charity_planter"); // Ustaw nazwę urządzenia tak jak w gatts_demo
         esp_ble_gap_config_adv_data(&adv_data);
 
-        // Tworzenie serwisu
         esp_gatt_srvc_id_t service_id;
         service_id.is_primary = true;
         service_id.id.inst_id = 0x00;
@@ -224,89 +230,86 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         service_id.id.uuid.len = ESP_UUID_LEN_128;
         memcpy(service_id.id.uuid.uuid.uuid128, svc_uuid128, 16);
 
-        esp_ble_gatts_create_service(gatts_if, &service_id, 10); // Handle num = 10
+        esp_ble_gatts_create_service(gatts_if, &service_id, 16); // Zwiększamy liczbę handle (bezpieczny zapas)
         break;
     }
     case ESP_GATTS_CREATE_EVT: {
-        // Dodawanie charakterystyk po utworzeniu serwisu
         uint16_t service_handle = param->create.service_handle;
         esp_ble_gatts_start_service(service_handle);
 
-        // 1. Charakterystyka SSID (Write)
-        esp_bt_uuid_t char_ssid_uuid;
-        char_ssid_uuid.len = ESP_UUID_LEN_16;
-        char_ssid_uuid.uuid.uuid16 = CHAR_SSID_UUID;
-        
-        esp_ble_gatts_add_char(service_handle, &char_ssid_uuid,
+        // 1. SSID
+        esp_bt_uuid_t char_uuid;
+        char_uuid.len = ESP_UUID_LEN_16;
+        char_uuid.uuid.uuid16 = CHAR_SSID_UUID;
+        esp_ble_gatts_add_char(service_handle, &char_uuid,
+                               ESP_GATT_PERM_WRITE | ESP_GATT_PERM_READ, // Dodano READ, by można było czytać
+                               ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_READ,
+                               NULL, NULL);
+
+        // 2. PASS
+        char_uuid.uuid.uuid16 = CHAR_PASS_UUID;
+        esp_ble_gatts_add_char(service_handle, &char_uuid,
                                ESP_GATT_PERM_WRITE,
                                ESP_GATT_CHAR_PROP_BIT_WRITE,
                                NULL, NULL);
 
-        // 2. Charakterystyka PASSWORD (Write)
-        esp_bt_uuid_t char_pass_uuid;
-        char_pass_uuid.len = ESP_UUID_LEN_16;
-        char_pass_uuid.uuid.uuid16 = CHAR_PASS_UUID;
-
-        esp_ble_gatts_add_char(service_handle, &char_pass_uuid,
-                               ESP_GATT_PERM_WRITE,
-                               ESP_GATT_CHAR_PROP_BIT_WRITE,
-                               NULL, NULL);
-
-        // 3. Charakterystyka CONTROL (Write)
-        esp_bt_uuid_t char_ctrl_uuid;
-        char_ctrl_uuid.len = ESP_UUID_LEN_16;
-        char_ctrl_uuid.uuid.uuid16 = CHAR_CTRL_UUID;
-
-        esp_ble_gatts_add_char(service_handle, &char_ctrl_uuid,
+        // 3. CTRL
+        char_uuid.uuid.uuid16 = CHAR_CTRL_UUID;
+        esp_ble_gatts_add_char(service_handle, &char_uuid,
                                ESP_GATT_PERM_WRITE,
                                ESP_GATT_CHAR_PROP_BIT_WRITE,
                                NULL, NULL);
         break;
     }
     case ESP_GATTS_ADD_CHAR_EVT: {
-        // Zapisujemy handle dla każdej dodanej charakterystyki
-        // Dodajemy DESKRYPTOR (User Description) dla czytelności w NRF Connect
         uint16_t char_uuid = param->add_char.char_uuid.uuid.uuid16;
         uint16_t attr_handle = param->add_char.attr_handle;
         
-        const char *desc_val = NULL;
-
+        // Zapisujemy handle charakterystyki i ustawiamy kontekst dla deskryptora
         if (char_uuid == CHAR_SSID_UUID) {
             ssid_handle = attr_handle;
-            desc_val = "WiFi SSID";
+            current_creating_char_uuid = CHAR_SSID_UUID;
         } else if (char_uuid == CHAR_PASS_UUID) {
             pass_handle = attr_handle;
-            desc_val = "WiFi Password";
+            current_creating_char_uuid = CHAR_PASS_UUID;
         } else if (char_uuid == CHAR_CTRL_UUID) {
             ctrl_handle = attr_handle;
-            desc_val = "Send '1' to Apply";
+            current_creating_char_uuid = CHAR_CTRL_UUID;
         }
 
-        if (desc_val != NULL) {
-            esp_bt_uuid_t descr_uuid;
-            descr_uuid.len = ESP_UUID_LEN_16;
-            descr_uuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_DESCRIPTION; // 0x2901
-            
-            esp_ble_gatts_add_char_descr(param->add_char.service_handle, 
-                                         &descr_uuid, 
-                                         ESP_GATT_PERM_READ,
-                                         NULL, NULL);
-            // Uwaga: Wartość deskryptora ustawiamy w evencie ADD_CHAR_DESCR_EVT? 
-            // W Bluedroid często prościej jest obsłużyć request READ deskryptora, 
-            // ale tutaj dodamy go, aby istniał. Wartość ustawimy statycznie lub przez request.
-            // Dla uproszczenia tutaj przyjmijmy, że NRF Connect zobaczy UUID, 
-            // a zaawansowana obsługa wartości deskryptora wymagałaby ESP_GATTS_ADD_CHAR_DESCR_EVT.
+        // Dodajemy deskryptor opisu (0x2901) do KAŻDEJ z powyższych charakterystyk
+        esp_bt_uuid_t descr_uuid;
+        descr_uuid.len = ESP_UUID_LEN_16;
+        descr_uuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_DESCRIPTION; // 0x2901
+        
+        esp_ble_gatts_add_char_descr(param->add_char.service_handle, 
+                                     &descr_uuid, 
+                                     ESP_GATT_PERM_READ,
+                                     NULL, NULL);
+        break;
+    }
+    case ESP_GATTS_ADD_CHAR_DESCR_EVT: {
+        // Tutaj przypisujemy handle nowo utworzonego deskryptora do odpowiedniej zmiennej
+        if (current_creating_char_uuid == CHAR_SSID_UUID) {
+            ssid_descr_handle = param->add_char_descr.attr_handle;
+        } else if (current_creating_char_uuid == CHAR_PASS_UUID) {
+            pass_descr_handle = param->add_char_descr.attr_handle;
+        } else if (current_creating_char_uuid == CHAR_CTRL_UUID) {
+            ctrl_descr_handle = param->add_char_descr.attr_handle;
         }
         break;
     }
-    case ESP_GATTS_ADD_CHAR_DESCR_EVT:
-        // Tutaj można by zainicjować wartość deskryptora, ale NRF Connect często 
-        // czyta deskryptor dynamicznie. Zostawmy domyślne.
-        break;
-
     case ESP_GATTS_CONNECT_EVT:
         is_connected = true;
         connection_id = param->connect.conn_id;
+        // Wymuszenie aktualizacji parametrów połączenia (często pomaga na responsywność w Androidzie)
+        esp_ble_conn_update_params_t conn_params = {0};
+        memcpy(conn_params.bda, param->connect.remote_bda, sizeof(esp_bd_addr_t));
+        conn_params.latency = 0;
+        conn_params.max_int = 0x20;    // max_int = 0x20*1.25ms = 40ms
+        conn_params.min_int = 0x10;    // min_int = 0x10*1.25ms = 20ms
+        conn_params.timeout = 400;     // timeout = 400*10ms = 4000ms
+        esp_ble_gap_update_conn_params(&conn_params);
         ESP_LOGI(LOG_TAG, "BLE Connected");
         break;
 
@@ -318,20 +321,61 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         }
         break;
 
+    // --- KLUCZOWA CZĘŚĆ: OBSŁUGA ODCZYTU (Wyświetlanie nazw w NRF Connect) ---
+    case ESP_GATTS_READ_EVT: {
+        esp_gatt_rsp_t rsp;
+        memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
+        rsp.attr_value.handle = param->read.handle;
+
+        const char *descr_val = NULL;
+
+        // Sprawdzamy, o który deskryptor pyta telefon
+        if (param->read.handle == ssid_descr_handle) {
+            descr_val = "Wi-Fi SSID";
+        } else if (param->read.handle == pass_descr_handle) {
+            descr_val = "Wi-Fi Password";
+        } else if (param->read.handle == ctrl_descr_handle) {
+            descr_val = "Save & Connect (Send '1')";
+        } 
+        // Opcjonalnie: Obsługa odczytu samej wartości SSID (jeśli dodano ESP_GATT_PERM_READ)
+        else if (param->read.handle == ssid_handle) {
+             // Jeśli chcesz, aby można było odczytać aktualnie wpisane SSID
+             descr_val = (strlen(temp_ssid) > 0) ? temp_ssid : "Empty"; 
+        }
+
+        if (descr_val != NULL) {
+            rsp.attr_value.len = strlen(descr_val);
+            // Zabezpieczenie przed przepełnieniem bufora
+            if (rsp.attr_value.len > ESP_GATT_MAX_ATTR_LEN) {
+                rsp.attr_value.len = ESP_GATT_MAX_ATTR_LEN;
+            }
+            memcpy(rsp.attr_value.value, descr_val, rsp.attr_value.len);
+            
+            esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id,
+                                        ESP_GATT_OK, &rsp);
+        } else {
+            // Jeśli pytają o coś, czego nie znamy (lub write-only)
+            esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id,
+                                        ESP_GATT_Error, NULL);
+        }
+        break;
+    }
+
     case ESP_GATTS_WRITE_EVT: {
-        // Obsługa zapisu danych przez telefon
         if (param->write.handle == ssid_handle) {
             memset(temp_ssid, 0, sizeof(temp_ssid));
-            memcpy(temp_ssid, param->write.value, param->write.len);
+            // Kopiujemy tylko tyle, ile się zmieści
+            size_t copy_len = (param->write.len < sizeof(temp_ssid)) ? param->write.len : (sizeof(temp_ssid) - 1);
+            memcpy(temp_ssid, param->write.value, copy_len);
             ESP_LOGI(LOG_TAG, "Received SSID: %s", temp_ssid);
         } 
         else if (param->write.handle == pass_handle) {
             memset(temp_pass, 0, sizeof(temp_pass));
-            memcpy(temp_pass, param->write.value, param->write.len);
+            size_t copy_len = (param->write.len < sizeof(temp_pass)) ? param->write.len : (sizeof(temp_pass) - 1);
+            memcpy(temp_pass, param->write.value, copy_len);
             ESP_LOGI(LOG_TAG, "Received PASS: %s", temp_pass);
         } 
         else if (param->write.handle == ctrl_handle) {
-            // Sprawdź czy użytkownik wysłał '1' (0x31)
             if (param->write.len > 0 && param->write.value[0] == '1') {
                 ESP_LOGI(LOG_TAG, "Apply command received. Saving to NVS...");
                 provisioning_done = true;
@@ -342,7 +386,6 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             }
         }
         
-        // Odpowiedz OK na Write Request (jeśli need_rsp = true)
         if (param->write.need_rsp) {
             esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
         }
