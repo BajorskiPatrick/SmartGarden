@@ -18,9 +18,6 @@
 #include "veml7700.h"
 
 // --- VARIANT: Power Saving pomiędzy odczytami ---
-// Ten plik jest alternatywnym programem "app_main.c".
-// Użycie: podmień zawartość main/app_main.c na ten plik (albo zmień nazwę pliku na app_main.c)
-// i zbuduj/flashuj standardowo przez ESP-IDF.
 
 static const char *TAG = "SMART_GARDEN";
 
