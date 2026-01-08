@@ -9,6 +9,7 @@
 #include "veml7700.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_rom_sys.h" // Dla esp_rom_delay_us
 
 static const char *TAG = "SENSORS";
 
@@ -31,6 +32,43 @@ static adc_oneshot_unit_handle_t adc1_handle;
 
 static long map_val(long x, long in_min, long in_max, long out_min, long out_max) {
     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+// Funkcja resetująca magistralę I2C (uwalnia linię SDA jeśli slave ją trzyma)
+static void i2c_bus_reset(void) {
+    ESP_LOGI(TAG, "Wykonuję reset magistrali I2C...");
+    gpio_config_t io_conf = {
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = (1ULL << I2C_MASTER_SCL_IO) | (1ULL << I2C_MASTER_SDA_IO),
+        .pull_down_en = 0,
+        .pull_up_en = 1,
+    };
+    gpio_config(&io_conf);
+
+    gpio_set_level(I2C_MASTER_SDA_IO, 1);
+    
+    // Generuj 9 taktów zegara, aby odblokować slave'a
+    for (int i = 0; i < 9; i++) {
+        gpio_set_level(I2C_MASTER_SCL_IO, 0);
+        esp_rom_delay_us(10);
+        gpio_set_level(I2C_MASTER_SCL_IO, 1);
+        esp_rom_delay_us(10);
+    }
+    
+    // Stop condition
+    gpio_set_level(I2C_MASTER_SCL_IO, 0);
+    esp_rom_delay_us(10);
+    gpio_set_level(I2C_MASTER_SDA_IO, 0);
+    esp_rom_delay_us(10);
+    gpio_set_level(I2C_MASTER_SCL_IO, 1);
+    esp_rom_delay_us(10);
+    gpio_set_level(I2C_MASTER_SDA_IO, 1);
+
+    // Przywróć domyślny stan
+    gpio_reset_pin(I2C_MASTER_SCL_IO);
+    gpio_reset_pin(I2C_MASTER_SDA_IO);
+    ESP_LOGI(TAG, "Reset magistrali I2C zakończony.");
 }
 
 static void water_sensor_init(void) {
@@ -76,6 +114,9 @@ esp_err_t sensors_init(void) {
     // 1. Inicjalizacja GPIO i ADC
     water_sensor_init();
     soil_sensor_init();
+
+    // Reset I2C przed sterownikiem
+    i2c_bus_reset();
 
     // 2. I2C (i2cdev library init)
     ESP_ERROR_CHECK(i2cdev_init()); 

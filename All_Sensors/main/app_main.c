@@ -188,14 +188,14 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    // Inicjalizacja Provisioningu i WiFi
-    wifi_prov_init();
-    
-    // Inicjalizacja sensorów
+    // Inicjalizacja sensorów (Wcześniej niż WiFi/BLE, żeby uniknąć zakłóceń przy starcie I2C)
     if (sensors_init() != ESP_OK) {
         ESP_LOGE(TAG, "Błąd inicjalizacji sensorów!");
     }
 
+    // Inicjalizacja Provisioningu i WiFi
+    wifi_prov_init();
+    
     // Oczekiwanie na połączenie przed startem MQTT (blokujące)
     // Dzięki temu nie startujemy MQTT bez sieci
     ESP_LOGI(TAG, "Oczekiwanie na połączenie WiFi...");
