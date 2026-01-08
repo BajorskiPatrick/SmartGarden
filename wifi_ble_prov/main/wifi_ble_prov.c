@@ -37,6 +37,7 @@
 static uint16_t connection_id = 0;
 static bool is_connected = false;
 static uint16_t ssid_handle, pass_handle, ctrl_handle;
+static bool restart_pending = false;
 
 // Bufory tymczasowe na dane z BLE
 static char temp_ssid[32] = {0};
@@ -64,6 +65,11 @@ static esp_timer_handle_t prov_timeout_timer = NULL;
 static bool provisioning_window_open = false;
 static bool provisioning_done = false;
 static bool ble_stack_started = false;
+
+static void restart_timer_cb(void *arg) {
+    ESP_LOGI(LOG_TAG, "Restart timer expired. Rebooting system now.");
+    esp_restart();
+}
 
 static void provisioning_timeout_cb(void *arg) {
     (void)arg;
@@ -313,7 +319,17 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     case ESP_GATTS_DISCONNECT_EVT:
         is_connected = false;
         ESP_LOGI(LOG_TAG, "BLE Disconnected");
-        if (provisioning_window_open && !provisioning_done) {
+        if (restart_pending) {
+            ESP_LOGI(LOG_TAG, "Restart pending. Waiting 1s before reboot to ensure clean disconnect...");
+            // Używamy jednorazowego timera, aby nie blokować callbacka BLE
+            esp_timer_create_args_t timer_args = {
+                .callback = &restart_timer_cb,
+                .name = "restart_timer"
+            };
+            esp_timer_handle_t r_timer;
+            esp_timer_create(&timer_args, &r_timer);
+            esp_timer_start_once(r_timer, 1000000); // 1 sekunda (w mikrosekundach)
+        } else if (provisioning_window_open && !provisioning_done) {
             esp_ble_gap_start_advertising(&adv_params);
         }
         break;
@@ -337,14 +353,18 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                 provisioning_done = true;
                 close_provisioning_window(true);
                 save_wifi_credentials(temp_ssid, temp_pass);
-                ESP_LOGI(LOG_TAG, "Credentials saved. Rebooting to apply...");
-                esp_restart();
+                restart_pending = true;
+                ESP_LOGI(LOG_TAG, "Credentials saved. Disconnecting to reboot...");
             }
         }
         
         // Odpowiedz OK na Write Request (jeśli need_rsp = true)
         if (param->write.need_rsp) {
             esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
+        }
+
+        if (restart_pending) {
+            esp_ble_gatts_close(gatts_if, param->write.conn_id);
         }
         break;
     }
