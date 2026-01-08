@@ -20,13 +20,13 @@
 
 #define LOG_TAG "CUSTOM_PROV"
 
-// --- KONFIGURACJA GPIO ---
+// KONFIGURACJA GPIO
 // Używamy przycisku BOOT (GPIO 0) do resetu ustawień
 #define BUTTON_GPIO GPIO_NUM_0 
 
 #define BUTTON_HOLD_RESET_MS 3000
 
-// --- UUID dla usługi i charakterystyk (Losowe UUID 128-bit) ---
+// UUID dla usługi i charakterystyk
 #define SERVICE_UUID        {0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef} // Przykładowe
 // Charakterystyka SSID (Write)
 #define CHAR_SSID_UUID      0xFF01 
@@ -78,9 +78,7 @@ static void provisioning_timeout_cb(void *arg) {
     }
 }
 
-// ==========================================================
-// OBSŁUGA NVS (Pamięć trwała)
-// ==========================================================
+// OBSŁUGA NVS
 static esp_err_t save_wifi_credentials(const char* ssid, const char* pass) {
     nvs_handle_t my_handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &my_handle);
@@ -126,9 +124,7 @@ static esp_err_t clear_wifi_credentials() {
     return err;
 }
 
-// ==========================================================
 // OBSŁUGA WIFI
-// ==========================================================
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
@@ -170,13 +166,10 @@ static void connect_wifi(const char* ssid, const char* pass) {
     esp_wifi_connect();
 }
 
-// ==========================================================
 // OBSŁUGA BLE (GATT SERVER)
-// ==========================================================
-
 #define PROFILE_APP_ID 0
 
-// Konfiguracja reklamowania (Advertising)
+// Konfiguracja advertisingu
 static esp_ble_adv_params_t adv_params = {
     .adv_int_min        = 0x20,
     .adv_int_max        = 0x40,
@@ -197,12 +190,12 @@ static esp_ble_adv_data_t adv_data = {
     .p_manufacturer_data =  NULL,
     .service_data_len = 0,
     .p_service_data = NULL,
-    .service_uuid_len = 0, // Proste advertising bez UUID w pakiecie, tylko nazwa
+    .service_uuid_len = 0,
     .p_service_uuid = NULL,
     .flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT),
 };
 
-// --- Callbacki GAP (Połączenia / Reklamowanie) ---
+// Reklamowanie BLE
 static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
     switch (event) {
     case ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT:
@@ -222,7 +215,7 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
     }
 }
 
-// --- Callbacki GATTS (Charakterystyki) ---
+// Ustawienie charakterystyk i obsługa zdarzeń GATTS
 static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param) {
     switch (event) {
     case ESP_GATTS_REG_EVT: {
@@ -298,14 +291,13 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         ESP_LOGI(LOG_TAG, "BLE Disconnected");
         if (restart_pending) {
             ESP_LOGI(LOG_TAG, "Restart pending. Waiting 1s before reboot to ensure clean disconnect...");
-            // Używamy jednorazowego timera, aby nie blokować callbacka BLE
             esp_timer_create_args_t timer_args = {
                 .callback = &restart_timer_cb,
                 .name = "restart_timer"
             };
             esp_timer_handle_t r_timer;
             esp_timer_create(&timer_args, &r_timer);
-            esp_timer_start_once(r_timer, 1000000); // 1 sekunda (w mikrosekundach)
+            esp_timer_start_once(r_timer, 1000000);
         } else if (provisioning_window_open && !provisioning_done) {
             esp_ble_gap_start_advertising(&adv_params);
         }
@@ -337,7 +329,6 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             }
         }
         
-        // Odpowiedz OK na Write Request (jeśli need_rsp = true)
         if (param->write.need_rsp) {
             esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
         }
@@ -365,10 +356,7 @@ static void start_ble_stack() {
     esp_ble_gatts_app_register(PROFILE_APP_ID);
 }
 
-// ==========================================================
-// START/STOP ADVERTISING (PROVISIONING WINDOW)
-// ==========================================================
-
+// Provisioning window
 static void close_provisioning_window(bool provisioning_completed) {
     provisioning_window_open = false;
     provisioning_done = provisioning_completed;
@@ -410,26 +398,23 @@ static void start_provisioning_window(void) {
         return;
     }
 
-    // Jeśli stos już działa, to po prostu uruchom advertising ponownie
+    // Jeśli stos już działa, to po prostu uruchamiamy advertising ponownie
     ESP_LOGI(LOG_TAG, "Provisioning window opened. Starting advertising...");
     esp_ble_gap_start_advertising(&adv_params);
 }
 
 static void stop_ble_provisioning(void) {
-    // esp_ble_gap_stop_advertising() zwróci błąd jeśli advertising nie działa; ignorujemy.
     esp_ble_gap_stop_advertising();
 }
 
-// ==========================================================
-// MONITOROWANIE PRZYCISKU (Factory Reset / Re-provision)
-// ==========================================================
+// Monitorowanie przycisku Boot
 static void button_task(void *pvParameter) {
     (void)pvParameter;
     gpio_set_direction(BUTTON_GPIO, GPIO_MODE_INPUT);
-    gpio_set_pull_mode(BUTTON_GPIO, GPIO_PULLUP_ONLY); // Button usually connects to GND
+    gpio_set_pull_mode(BUTTON_GPIO, GPIO_PULLUP_ONLY);
 
     while (1) {
-        if (gpio_get_level(BUTTON_GPIO) == 0) { // Pressed
+        if (gpio_get_level(BUTTON_GPIO) == 0) {
             int64_t press_start_us = esp_timer_get_time();
 
             // Czekaj aż puści albo minie 3s
@@ -454,16 +439,12 @@ static void button_task(void *pvParameter) {
                 }
             }
 
-            // Debounce
             vTaskDelay(pdMS_TO_TICKS(200));
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
-// ==========================================================
-// MAIN
-// ==========================================================
 void app_main(void) {
     // 1. Inicjalizacja NVS
     esp_err_t ret = nvs_flash_init();
