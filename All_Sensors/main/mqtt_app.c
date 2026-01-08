@@ -93,6 +93,12 @@ void mqtt_app_start(mqtt_data_callback_t cb) {
         .broker.address.uri = CONFIG_BROKER_URL, 
         .session.protocol_ver = MQTT_PROTOCOL_V_5,
         .network.disable_auto_reconnect = false,
+        .credentials = {
+            .username = MQTT_USERNAME,
+            .authentication = {
+                .password = MQTT_PASSWORD,
+            },
+        },
     };
 
     client = esp_mqtt_client_init(&mqtt5_cfg);

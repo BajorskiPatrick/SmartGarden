@@ -134,7 +134,9 @@ static esp_err_t clear_wifi_credentials() {
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        // Nie łączymy się tutaj automatycznie, bo connect_wifi() ustawi config i wywoła connect ręcznie.
+        // esp_wifi_connect(); 
+        ESP_LOGI(LOG_TAG, "WiFi Started. Waiting for configuration...");
     } 
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGW(LOG_TAG, "WiFi Disconnected. Retrying...");

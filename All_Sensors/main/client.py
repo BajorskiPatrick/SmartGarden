@@ -3,10 +3,10 @@ import json
 import time
 import random
 
-BROKER_ADDRESS = "172.20.10.4"
+BROKER_ADDRESS = "172.20.10.2"
 PORT = 1883
-USER = "admin"
-PASSWORD = "admin"
+USER = "backend"
+PASSWORD = "backend"
 
 TARGET_USER_ID = "user_jan_banasik"
 TARGET_DEVICE_ID = "stacja_salon_01"
@@ -61,7 +61,7 @@ def on_message(client, userdata, msg):
 
 # Inicjalizacja klienta MQTT
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
-# client.username_pw_set(USER, PASSWORD)
+client.username_pw_set(USER, PASSWORD)
 client.on_connect = on_connect
 client.on_message = on_message
 

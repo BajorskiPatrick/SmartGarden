@@ -8,6 +8,10 @@
 #define USER_ID "user_jan_banasik"
 #define DEVICE_ID "stacja_salon_01"
 
+// Dane logowania MQTT (Każde urządzenie może mieć inne)
+#define MQTT_USERNAME "device_salon_01"
+#define MQTT_PASSWORD "secret_password_123"
+
 typedef struct {
     int soil_moisture;
     float temp;
