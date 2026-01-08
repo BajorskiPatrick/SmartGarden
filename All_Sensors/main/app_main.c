@@ -5,7 +5,7 @@
 #include "nvs_flash.h"
 #include "esp_event.h"
 #include "esp_netif.h"
-#include "protocol_examples_common.h"
+// #include "protocol_examples_common.h" // USUNIĘTE
 #include "esp_log.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
@@ -14,6 +14,7 @@
 #include "common_defs.h"
 #include "sensors.h"
 #include "mqtt_app.h"
+#include "wifi_prov.h" // DODANE
 
 #define TAG "MAIN_APP"
 #define PUBLISH_INTERVAL_MS 10000
@@ -187,13 +188,19 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    // Inicjalizacja WiFi (example_connect z helperów IDF)
-    ESP_ERROR_CHECK(example_connect());
-
+    // Inicjalizacja Provisioningu i WiFi
+    wifi_prov_init();
+    
     // Inicjalizacja sensorów
     if (sensors_init() != ESP_OK) {
         ESP_LOGE(TAG, "Błąd inicjalizacji sensorów!");
     }
+
+    // Oczekiwanie na połączenie przed startem MQTT (blokujące)
+    // Dzięki temu nie startujemy MQTT bez sieci
+    ESP_LOGI(TAG, "Oczekiwanie na połączenie WiFi...");
+    wifi_prov_wait_connected();
+    ESP_LOGI(TAG, "Połączono! Start MQTT.");
 
     // Start MQTT
     mqtt_app_start(process_incoming_data);
