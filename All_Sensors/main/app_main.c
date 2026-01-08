@@ -12,9 +12,10 @@
 #include "mqtt_client.h"
 #include "cJSON.h"
 #include "freertos/queue.h"
+#include "freertos/task.h" // Dodane dla vTaskDelay
 #include "i2cdev.h"
 #include "bmp280.h"
-#include "driver/gpio.h" // do obsługi pływakowe czujnika poziomu wody
+#include "driver/gpio.h" 
 #include "esp_adc/adc_oneshot.h"
 
 // --- DOŁĄCZENIE WŁASNEJ BIBLIOTEKI ---
@@ -112,6 +113,10 @@ static esp_err_t bme280_sensor_init(void)
 {
     bmp280_params_t params;
     bmp280_init_default_params(&params); 
+    
+    // [MODYFIKACJA DLA POWER SAVING]
+    // Zamiast BMP280_MODE_NORMAL używamy trybu wymuszonego.
+    params.mode = BMP280_MODE_FORCED;
 
     // bmp280_init_desc zainicjuje magistralę I2C wewnątrz biblioteki i2cdev
     esp_err_t err = bmp280_init_desc(&bme280_dev, BMP280_I2C_ADDRESS_0, I2C_MASTER_NUM, 
@@ -128,6 +133,7 @@ static esp_err_t bme280_sensor_init(void)
 // ZMIEIONA FUNKCJA POBIERANIA DANYCH
 void get_sensor_data(int *soil_moisture, float *temp, float *humidity, float *pressure, float *light_lux, int* water_ok) {
     
+    // --- 1. ODCZYT WILGOTNOŚCI GLEBY (Bez zmian) ---
     int raw_adc = 0;
     ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, SOIL_ADC_CHANNEL, &raw_adc));
     int percentage = map_val(raw_adc, SOIL_DRY_VAL, SOIL_WET_VAL, 0, 100);
@@ -137,22 +143,32 @@ void get_sensor_data(int *soil_moisture, float *temp, float *humidity, float *pr
     *soil_moisture = percentage;
     ESP_LOGI(TAG, "[GLEBA] ADC: %d, Wilgotność: %d %%", raw_adc, percentage);
     
-    // Biblioteka esp-idf-lib/bmp280 nie używa struktury, lecz wskaźników na float
-    float bme_temp = 0, bme_press = 0, bme_hum = 0;
-    esp_err_t bme_err = bmp280_read_float(&bme280_dev, &bme_temp, &bme_press, &bme_hum);
+    // --- 2. ODCZYT BME280 (Power Saving - Forced Mode) ---
+    // Musimy wybudzić czujnik, odczekać na pomiar i odczytać wynik
+    esp_err_t err = bmp280_force_measurement(&bme280_dev);
+    if (err == ESP_OK) {
+        // Czekamy na zakończenie pomiaru (ok. 50ms wystarczy)
+        vTaskDelay(pdMS_TO_TICKS(50));
 
-    if (bme_err == ESP_OK) {
-        *temp = bme_temp;
-        *pressure = bme_press / 100.0f; 
-        *humidity = bme_hum;
-        ESP_LOGI(TAG, "[BME280] T: %.2f C, P: %.2f hPa, H: %.2f %%", *temp, *pressure, *humidity);
+        float bme_temp = 0, bme_press = 0, bme_hum = 0;
+        esp_err_t bme_err = bmp280_read_float(&bme280_dev, &bme_temp, &bme_press, &bme_hum);
+
+        if (bme_err == ESP_OK) {
+            *temp = bme_temp;
+            *pressure = bme_press / 100.0f; 
+            *humidity = bme_hum;
+            ESP_LOGI(TAG, "[BME280] T: %.2f C, P: %.2f hPa, H: %.2f %%", *temp, *pressure, *humidity);
+        } else {
+            ESP_LOGE(TAG, "Błąd odczytu BME280: %s", esp_err_to_name(bme_err));
+            *temp = 0.0; *pressure = 0.0; *humidity = 0.0;
+        }
     } else {
-        ESP_LOGE(TAG, "Błąd odczytu BME280: %s", esp_err_to_name(bme_err));
-        *temp = 0.0; *pressure = 0.0; *humidity = 0.0;
+         ESP_LOGE(TAG, "Błąd wybudzania BME280: %s", esp_err_to_name(err));
     }
 
-    // --- ODCZYT VEML7700 ---
+    // --- 3. ODCZYT VEML7700 (Power Saving jest automatyczny po konfiguracji) ---
     double lux_val = 0.0;
+    // Auto adjust gain zadziała poprawnie nawet w trybie PSM (może wymagać dłuższego czasu, ale przy rzadkich odczytach to OK)
     veml7700_auto_adjust_gain(&veml_sensor);
     esp_err_t veml_err = veml7700_read_lux(&veml_sensor, &lux_val);
     
@@ -164,7 +180,7 @@ void get_sensor_data(int *soil_moisture, float *temp, float *humidity, float *pr
         *light_lux = -1.0;
     }
 
-    // --- ODCZYT STANU WODY ---
+    // --- 4. ODCZYT STANU WODY (Standardowy) ---
     get_water_level_status(water_ok);
     ESP_LOGI(TAG, "[WODA] Stan: %s", (*water_ok == 1) ? "OK" : "NISKI POZIOM!");
 
@@ -196,7 +212,10 @@ void send_alert(const char* type, const char* message) {
 void check_water_level(int* water_status) {
     // Logika alertu poziomu wody
     // Zakładamy: 1 = OK, 0 = BRAK WODY (Low Level)
-    if (*water_status == 0) {
+    // UWAGA: Wcześniej logika get_water_level_status zwracała 1 jako ALARM.
+    // Ujednolicamy z funkcją get_sensor_data: water_ok=0 (OK), water_ok=1 (Alarm)
+    
+    if (*water_status == 1) { // Alarm
         if (!water_alert_sent) {
             send_alert("water_level", "CRITICAL_LOW");
             water_alert_sent = true;
@@ -237,7 +256,10 @@ void send_telemetry_json(telemetry_data_t *data) {
     cJSON_AddStringToObject(sensors, "air_humidity_pct", hum_str);
     cJSON_AddStringToObject(sensors, "pressure_hpa", press_str);
     cJSON_AddStringToObject(sensors, "light_lux", lux_str);
-    cJSON_AddBoolToObject(sensors, "water_tank_ok", data->water_ok);
+    
+    // Logika JSON: water_tank_ok = true (woda jest), false (brak wody)
+    // Nasze zmienne: 0=OK, 1=Alarm
+    cJSON_AddBoolToObject(sensors, "water_tank_ok", (data->water_ok == 0));
 
     cJSON_AddItemToObject(root, "sensors", sensors);
 
@@ -431,20 +453,22 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    // 1. Kluczowa zmiana: Inicjalizacja biblioteki i2cdev (tylko raz, globalnie)
+    // 1. Inicjalizacja czujników analogowych i cyfrowych
     water_sensor_init();
     soil_sensor_init();
     ESP_ERROR_CHECK(i2cdev_init()); 
     
-    // 2. Inicjalizacja czujnika VEML7700 (teraz używa i2cdev)
-    // Tworzymy deskryptor
+    // 2. Inicjalizacja czujnika VEML7700 z włączonym Power Saving Mode
     esp_err_t err = veml7700_init_desc(&veml_sensor, I2C_MASTER_NUM, I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO);
     if (err == ESP_OK) {
-        // Konfiguracja czujnika
         err = veml7700_init(&veml_sensor);
         if (err == ESP_OK) {
-            ESP_LOGI(TAG, "VEML7700 skonfigurowany!");
             veml7700_set_config(&veml_sensor, VEML7700_GAIN_2, VEML7700_IT_100MS, VEML7700_PERS_1);
+            
+            // [MODYFIKACJA DLA POWER SAVING] Włączenie PSM Mode 4 (najbardziej oszczędny)
+            veml7700_set_power_saving(&veml_sensor, true, VEML7700_PSM_MODE_4);
+            ESP_LOGI(TAG, "VEML7700 skonfigurowany (PSM włączone)!");
+            
         } else {
              ESP_LOGE(TAG, "VEML7700 błąd init: %s", esp_err_to_name(err));
         }
@@ -452,10 +476,9 @@ void app_main(void)
         ESP_LOGE(TAG, "VEML7700 błąd deskryptora: %s", esp_err_to_name(err));
     }
 
-    // 3. Inicjalizacja czujnika BME280
-    // Teraz nie będzie konfliktu, bo oba korzystają z tego samego menedżera (i2cdev)
+    // 3. Inicjalizacja czujnika BME280 (Tryb Forced jest już ustawiony w bme280_sensor_init)
     if (bme280_sensor_init() == ESP_OK) {
-        ESP_LOGI(TAG, "BME280 zainicjowany pomyślnie!");
+        ESP_LOGI(TAG, "BME280 zainicjowany pomyślnie (Tryb FORCED)!");
     } else {
         ESP_LOGW(TAG, "BME280 problem z inicjalizacją");
     }
