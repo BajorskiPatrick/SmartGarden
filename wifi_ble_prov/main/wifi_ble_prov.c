@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -66,6 +67,10 @@ static bool provisioning_window_open = false;
 static bool provisioning_done = false;
 static bool ble_stack_started = false;
 
+// Czy w NVS są już zapisane dane WiFi (blokuje ponowne provisionowanie)
+// Używamy volatile, bo zmienna jest współdzielona między taskami.
+static volatile bool wifi_credentials_present = false;
+
 static void restart_timer_cb(void *arg) {
     ESP_LOGI(LOG_TAG, "Restart timer expired. Rebooting system now.");
     esp_restart();
@@ -92,6 +97,10 @@ esp_err_t save_wifi_credentials(const char* ssid, const char* pass) {
     
     if (err == ESP_OK) err = nvs_commit(my_handle);
     nvs_close(my_handle);
+
+    if (err == ESP_OK) {
+        wifi_credentials_present = (ssid != NULL && ssid[0] != '\0');
+    }
     return err;
 }
 
@@ -113,8 +122,12 @@ esp_err_t clear_wifi_credentials() {
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &my_handle);
     if (err == ESP_OK) {
         nvs_erase_all(my_handle);
-        nvs_commit(my_handle);
+        err = nvs_commit(my_handle);
         nvs_close(my_handle);
+
+        if (err == ESP_OK) {
+            wifi_credentials_present = false;
+        }
     }
     return err;
 }
@@ -466,8 +479,12 @@ void button_task(void *pvParameter) {
             // Krótkie kliknięcie: otwórz okno provisioningu na 2 min
             int64_t press_ms = (esp_timer_get_time() - press_start_us) / 1000;
             if (press_ms < 3000) {
-                ESP_LOGI(LOG_TAG, "BOOT clicked. Starting provisioning window (%d ms)...", PROV_ADV_TIMEOUT_MS);
-                start_provisioning_window();
+                if (!wifi_credentials_present) {
+                    ESP_LOGI(LOG_TAG, "BOOT clicked. Starting provisioning window (%d ms)...", PROV_ADV_TIMEOUT_MS);
+                    start_provisioning_window();
+                } else {
+                    ESP_LOGI(LOG_TAG, "WiFi credentials already saved. Provisioning disabled; hard reset required (hold button >= %lld ms).", 3000);
+                }
             }
 
             // Debounce
@@ -496,6 +513,8 @@ void app_main(void) {
     char ssid[32] = {0};
     char pass[64] = {0};
     esp_err_t wifi_err = load_wifi_credentials(ssid, sizeof(ssid), pass, sizeof(pass));
+
+    wifi_credentials_present = (wifi_err == ESP_OK && strlen(ssid) > 0);
 
     if (wifi_err == ESP_OK && strlen(ssid) > 0) {
         // Mamy konfigurację - uruchamiamy WiFi
