@@ -1,16 +1,15 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/event_groups.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "esp_bt.h"
+#include "esp_netif.h"
 
 #include "esp_gap_ble_api.h"
 #include "esp_gatts_api.h"
@@ -25,6 +24,8 @@
 // Używamy przycisku BOOT (GPIO 0) do resetu ustawień
 #define BUTTON_GPIO GPIO_NUM_0 
 
+#define BUTTON_HOLD_RESET_MS 3000
+
 // --- UUID dla usługi i charakterystyk (Losowe UUID 128-bit) ---
 #define SERVICE_UUID        {0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef} // Przykładowe
 // Charakterystyka SSID (Write)
@@ -35,8 +36,6 @@
 #define CHAR_CTRL_UUID      0xFF03
 
 // --- Zmienne globalne BLE ---
-static uint16_t connection_id = 0;
-static bool is_connected = false;
 static uint16_t ssid_handle, pass_handle, ctrl_handle;
 static bool restart_pending = false;
 
@@ -53,13 +52,10 @@ static char temp_pass[64] = {0};
 static void start_provisioning_window(void);
 static void stop_ble_provisioning(void);
 static void close_provisioning_window(bool provisioning_completed);
-void start_ble_stack(void);
-void wifi_init_sta(void);
-void connect_wifi(const char* ssid, const char* pass);
+static void start_ble_stack(void);
+static void wifi_init_sta(void);
+static void connect_wifi(const char* ssid, const char* pass);
 
-// ==========================================================
-// PROVISIONING: OKNO CZASOWE (SECURITY)
-// ==========================================================
 #define PROV_ADV_TIMEOUT_MS (2 * 60 * 1000)
 
 static esp_timer_handle_t prov_timeout_timer = NULL;
@@ -67,8 +63,6 @@ static bool provisioning_window_open = false;
 static bool provisioning_done = false;
 static bool ble_stack_started = false;
 
-// Czy w NVS są już zapisane dane WiFi (blokuje ponowne provisionowanie)
-// Używamy volatile, bo zmienna jest współdzielona między taskami.
 static volatile bool wifi_credentials_present = false;
 
 static void restart_timer_cb(void *arg) {
@@ -87,7 +81,7 @@ static void provisioning_timeout_cb(void *arg) {
 // ==========================================================
 // OBSŁUGA NVS (Pamięć trwała)
 // ==========================================================
-esp_err_t save_wifi_credentials(const char* ssid, const char* pass) {
+static esp_err_t save_wifi_credentials(const char* ssid, const char* pass) {
     nvs_handle_t my_handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &my_handle);
     if (err != ESP_OK) return err;
@@ -104,7 +98,7 @@ esp_err_t save_wifi_credentials(const char* ssid, const char* pass) {
     return err;
 }
 
-esp_err_t load_wifi_credentials(char* ssid, size_t ssid_len, char* pass, size_t pass_len) {
+static esp_err_t load_wifi_credentials(char* ssid, size_t ssid_len, char* pass, size_t pass_len) {
     nvs_handle_t my_handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &my_handle);
     if (err != ESP_OK) return err;
@@ -117,7 +111,7 @@ esp_err_t load_wifi_credentials(char* ssid, size_t ssid_len, char* pass, size_t 
     return err;
 }
 
-esp_err_t clear_wifi_credentials() {
+static esp_err_t clear_wifi_credentials() {
     nvs_handle_t my_handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &my_handle);
     if (err == ESP_OK) {
@@ -148,7 +142,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     }
 }
 
-void wifi_init_sta(void) {
+static void wifi_init_sta(void) {
     esp_netif_init();
     esp_event_loop_create_default();
     esp_netif_create_default_wifi_sta();
@@ -165,10 +159,11 @@ void wifi_init_sta(void) {
     esp_wifi_start();
 }
 
-void connect_wifi(const char* ssid, const char* pass) {
+static void connect_wifi(const char* ssid, const char* pass) {
     wifi_config_t wifi_config = {0};
-    strncpy((char*)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
-    strncpy((char*)wifi_config.sta.password, pass, sizeof(wifi_config.sta.password));
+
+    strlcpy((char*)wifi_config.sta.ssid, ssid ? ssid : "", sizeof(wifi_config.sta.ssid));
+    strlcpy((char*)wifi_config.sta.password, pass ? pass : "", sizeof(wifi_config.sta.password));
     
     ESP_LOGI(LOG_TAG, "Connecting to WiFi: SSID=%s", ssid);
     esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
@@ -283,54 +278,23 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         break;
     }
     case ESP_GATTS_ADD_CHAR_EVT: {
-        // Zapisujemy handle dla każdej dodanej charakterystyki
-        // Dodajemy DESKRYPTOR (User Description) dla czytelności w NRF Connect
         uint16_t char_uuid = param->add_char.char_uuid.uuid.uuid16;
         uint16_t attr_handle = param->add_char.attr_handle;
-        
-        const char *desc_val = NULL;
 
         if (char_uuid == CHAR_SSID_UUID) {
             ssid_handle = attr_handle;
-            desc_val = "WiFi SSID";
         } else if (char_uuid == CHAR_PASS_UUID) {
             pass_handle = attr_handle;
-            desc_val = "WiFi Password";
         } else if (char_uuid == CHAR_CTRL_UUID) {
             ctrl_handle = attr_handle;
-            desc_val = "Send '1' to Apply";
-        }
-
-        if (desc_val != NULL) {
-            esp_bt_uuid_t descr_uuid;
-            descr_uuid.len = ESP_UUID_LEN_16;
-            descr_uuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_DESCRIPTION; // 0x2901
-            
-            esp_ble_gatts_add_char_descr(param->add_char.service_handle, 
-                                         &descr_uuid, 
-                                         ESP_GATT_PERM_READ,
-                                         NULL, NULL);
-            // Uwaga: Wartość deskryptora ustawiamy w evencie ADD_CHAR_DESCR_EVT? 
-            // W Bluedroid często prościej jest obsłużyć request READ deskryptora, 
-            // ale tutaj dodamy go, aby istniał. Wartość ustawimy statycznie lub przez request.
-            // Dla uproszczenia tutaj przyjmijmy, że NRF Connect zobaczy UUID, 
-            // a zaawansowana obsługa wartości deskryptora wymagałaby ESP_GATTS_ADD_CHAR_DESCR_EVT.
         }
         break;
     }
-    case ESP_GATTS_ADD_CHAR_DESCR_EVT:
-        // Tutaj można by zainicjować wartość deskryptora, ale NRF Connect często 
-        // czyta deskryptor dynamicznie. Zostawmy domyślne.
-        break;
-
     case ESP_GATTS_CONNECT_EVT:
-        is_connected = true;
-        connection_id = param->connect.conn_id;
         ESP_LOGI(LOG_TAG, "BLE Connected");
         break;
 
     case ESP_GATTS_DISCONNECT_EVT:
-        is_connected = false;
         ESP_LOGI(LOG_TAG, "BLE Disconnected");
         if (restart_pending) {
             ESP_LOGI(LOG_TAG, "Restart pending. Waiting 1s before reboot to ensure clean disconnect...");
@@ -351,12 +315,14 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         // Obsługa zapisu danych przez telefon
         if (param->write.handle == ssid_handle) {
             memset(temp_ssid, 0, sizeof(temp_ssid));
-            memcpy(temp_ssid, param->write.value, param->write.len);
+            size_t copy_len = (param->write.len < (sizeof(temp_ssid) - 1)) ? param->write.len : (sizeof(temp_ssid) - 1);
+            memcpy(temp_ssid, param->write.value, copy_len);
             ESP_LOGI(LOG_TAG, "Received SSID: %s", temp_ssid);
         } 
         else if (param->write.handle == pass_handle) {
             memset(temp_pass, 0, sizeof(temp_pass));
-            memcpy(temp_pass, param->write.value, param->write.len);
+            size_t copy_len = (param->write.len < (sizeof(temp_pass) - 1)) ? param->write.len : (sizeof(temp_pass) - 1);
+            memcpy(temp_pass, param->write.value, copy_len);
             ESP_LOGI(LOG_TAG, "Received PASS: %s", temp_pass);
         } 
         else if (param->write.handle == ctrl_handle) {
@@ -387,7 +353,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
 }
 
 // --- Rejestracja GATTS ---
-void start_ble_stack() {
+static void start_ble_stack() {
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     esp_bt_controller_init(&bt_cfg);
     esp_bt_controller_enable(ESP_BT_MODE_BLE);
@@ -457,7 +423,8 @@ static void stop_ble_provisioning(void) {
 // ==========================================================
 // MONITOROWANIE PRZYCISKU (Factory Reset / Re-provision)
 // ==========================================================
-void button_task(void *pvParameter) {
+static void button_task(void *pvParameter) {
+    (void)pvParameter;
     gpio_set_direction(BUTTON_GPIO, GPIO_MODE_INPUT);
     gpio_set_pull_mode(BUTTON_GPIO, GPIO_PULLUP_ONLY); // Button usually connects to GND
 
@@ -468,7 +435,7 @@ void button_task(void *pvParameter) {
             // Czekaj aż puści albo minie 3s
             while (gpio_get_level(BUTTON_GPIO) == 0) {
                 int64_t held_ms = (esp_timer_get_time() - press_start_us) / 1000;
-                if (held_ms >= 3000) {
+                if (held_ms >= BUTTON_HOLD_RESET_MS) {
                     ESP_LOGW(LOG_TAG, "Button held! Clearing NVS and restarting...");
                     clear_wifi_credentials();
                     esp_restart();
@@ -478,12 +445,12 @@ void button_task(void *pvParameter) {
 
             // Krótkie kliknięcie: otwórz okno provisioningu na 2 min
             int64_t press_ms = (esp_timer_get_time() - press_start_us) / 1000;
-            if (press_ms < 3000) {
+            if (press_ms < BUTTON_HOLD_RESET_MS) {
                 if (!wifi_credentials_present) {
                     ESP_LOGI(LOG_TAG, "BOOT clicked. Starting provisioning window (%d ms)...", PROV_ADV_TIMEOUT_MS);
                     start_provisioning_window();
                 } else {
-                    ESP_LOGI(LOG_TAG, "WiFi credentials already saved. Provisioning disabled; hard reset required (hold button >= %lld ms).", 3000);
+                    ESP_LOGI(LOG_TAG, "WiFi credentials already saved. Provisioning disabled; hard reset required (hold button >= %d ms).", BUTTON_HOLD_RESET_MS);
                 }
             }
 
