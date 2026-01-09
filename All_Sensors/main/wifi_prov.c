@@ -21,6 +21,7 @@
 #include "esp_bt_main.h"
 #include "driver/gpio.h"
 #include "esp_timer.h"
+#include "esp_mac.h"
 
 #define LOG_TAG "WIFI_PROV"
 
@@ -33,11 +34,19 @@
 #define CHAR_SSID_UUID      0xFF01 
 #define CHAR_PASS_UUID      0xFF02
 #define CHAR_CTRL_UUID      0xFF03
+#define CHAR_BROKER_UUID    0xFF04
+#define CHAR_MQTT_LOGIN_UUID 0xFF05
+#define CHAR_MQTT_PASS_UUID 0xFF06
+#define CHAR_USER_ID_UUID   0xFF07
 
 // --- NVS Keys ---
 #define NVS_NAMESPACE "wifi_config"
 #define NVS_KEY_SSID "ssid"
 #define NVS_KEY_PASS "pass"
+#define NVS_KEY_BROKER "broker_uri"
+#define NVS_KEY_MQTT_LOGIN "mqtt_login"
+#define NVS_KEY_MQTT_PASS "mqtt_pass"
+#define NVS_KEY_USER_ID "user_id"
 
 // --- Zmienne globalne ---
 static EventGroupHandle_t s_wifi_event_group;
@@ -45,10 +54,22 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 
 static uint16_t ssid_handle, pass_handle, ctrl_handle;
+static uint16_t broker_handle, mqtt_login_handle, mqtt_pass_handle, user_id_handle;
 static bool restart_pending = false;
 
 static char temp_ssid[32] = {0};
 static char temp_pass[64] = {0};
+static char temp_broker[128] = {0};
+static char temp_mqtt_login[64] = {0};
+static char temp_mqtt_pass[64] = {0};
+static char temp_user_id[64] = {0};
+
+static bool ssid_dirty = false;
+static bool pass_dirty = false;
+static bool broker_dirty = false;
+static bool mqtt_login_dirty = false;
+static bool mqtt_pass_dirty = false;
+static bool user_id_dirty = false;
 
 static esp_timer_handle_t prov_timeout_timer = NULL;
 static bool provisioning_window_open = false;
@@ -99,6 +120,58 @@ static esp_err_t save_wifi_credentials(const char* ssid, const char* pass) {
     return err;
 }
 
+static esp_err_t save_prov_settings_partial(void) {
+    nvs_handle_t my_handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &my_handle);
+    if (err != ESP_OK) return err;
+
+    if (ssid_dirty && temp_ssid[0] != '\0') {
+        err = nvs_set_str(my_handle, NVS_KEY_SSID, temp_ssid);
+        if (err != ESP_OK) goto out;
+    }
+    if (pass_dirty && temp_pass[0] != '\0') {
+        err = nvs_set_str(my_handle, NVS_KEY_PASS, temp_pass);
+        if (err != ESP_OK) goto out;
+    }
+    if (broker_dirty && temp_broker[0] != '\0') {
+        err = nvs_set_str(my_handle, NVS_KEY_BROKER, temp_broker);
+        if (err != ESP_OK) goto out;
+    }
+    if (mqtt_login_dirty && temp_mqtt_login[0] != '\0') {
+        err = nvs_set_str(my_handle, NVS_KEY_MQTT_LOGIN, temp_mqtt_login);
+        if (err != ESP_OK) goto out;
+    }
+    if (mqtt_pass_dirty && temp_mqtt_pass[0] != '\0') {
+        err = nvs_set_str(my_handle, NVS_KEY_MQTT_PASS, temp_mqtt_pass);
+        if (err != ESP_OK) goto out;
+    }
+    if (user_id_dirty && temp_user_id[0] != '\0') {
+        err = nvs_set_str(my_handle, NVS_KEY_USER_ID, temp_user_id);
+        if (err != ESP_OK) goto out;
+    }
+
+    err = nvs_commit(my_handle);
+
+out:
+    nvs_close(my_handle);
+
+    // Odśwież flagę obecności WiFi creds na podstawie SSID w NVS (po commit)
+    if (err == ESP_OK) {
+        nvs_handle_t h;
+        if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+            size_t ssid_len = 0;
+            esp_err_t e2 = nvs_get_str(h, NVS_KEY_SSID, NULL, &ssid_len);
+            if (e2 == ESP_OK && ssid_len > 1) {
+                wifi_credentials_present = true;
+            } else {
+                wifi_credentials_present = false;
+            }
+            nvs_close(h);
+        }
+    }
+    return err;
+}
+
 // Zwraca ESP_OK jeśli odczytano dane
 static esp_err_t load_wifi_credentials(char* ssid, size_t ssid_len, char* pass, size_t pass_len) {
     nvs_handle_t my_handle;
@@ -124,6 +197,17 @@ static esp_err_t clear_wifi_credentials() {
         ESP_LOGI(LOG_TAG, "NVS cleared.");
     }
     return err;
+}
+
+static void reset_temp_buffers_and_flags(void) {
+    memset(temp_ssid, 0, sizeof(temp_ssid));
+    memset(temp_pass, 0, sizeof(temp_pass));
+    memset(temp_broker, 0, sizeof(temp_broker));
+    memset(temp_mqtt_login, 0, sizeof(temp_mqtt_login));
+    memset(temp_mqtt_pass, 0, sizeof(temp_mqtt_pass));
+    memset(temp_user_id, 0, sizeof(temp_user_id));
+
+    ssid_dirty = pass_dirty = broker_dirty = mqtt_login_dirty = mqtt_pass_dirty = user_id_dirty = false;
 }
 
 
@@ -270,6 +354,34 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                                ESP_GATT_PERM_WRITE,
                                ESP_GATT_CHAR_PROP_BIT_WRITE,
                                NULL, NULL);
+
+        // BROKER
+        char_uuid.uuid.uuid16 = CHAR_BROKER_UUID;
+        esp_ble_gatts_add_char(service_handle, &char_uuid,
+                               ESP_GATT_PERM_WRITE,
+                               ESP_GATT_CHAR_PROP_BIT_WRITE,
+                               NULL, NULL);
+
+        // MQTT LOGIN (device_id)
+        char_uuid.uuid.uuid16 = CHAR_MQTT_LOGIN_UUID;
+        esp_ble_gatts_add_char(service_handle, &char_uuid,
+                               ESP_GATT_PERM_WRITE,
+                               ESP_GATT_CHAR_PROP_BIT_WRITE,
+                               NULL, NULL);
+
+        // MQTT PASS
+        char_uuid.uuid.uuid16 = CHAR_MQTT_PASS_UUID;
+        esp_ble_gatts_add_char(service_handle, &char_uuid,
+                               ESP_GATT_PERM_WRITE,
+                               ESP_GATT_CHAR_PROP_BIT_WRITE,
+                               NULL, NULL);
+
+        // USER ID
+        char_uuid.uuid.uuid16 = CHAR_USER_ID_UUID;
+        esp_ble_gatts_add_char(service_handle, &char_uuid,
+                               ESP_GATT_PERM_WRITE,
+                               ESP_GATT_CHAR_PROP_BIT_WRITE,
+                               NULL, NULL);
         break;
     }
     case ESP_GATTS_ADD_CHAR_EVT: {
@@ -277,6 +389,10 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         if (uuid == CHAR_SSID_UUID) ssid_handle = param->add_char.attr_handle;
         else if (uuid == CHAR_PASS_UUID) pass_handle = param->add_char.attr_handle;
         else if (uuid == CHAR_CTRL_UUID) ctrl_handle = param->add_char.attr_handle;
+        else if (uuid == CHAR_BROKER_UUID) broker_handle = param->add_char.attr_handle;
+        else if (uuid == CHAR_MQTT_LOGIN_UUID) mqtt_login_handle = param->add_char.attr_handle;
+        else if (uuid == CHAR_MQTT_PASS_UUID) mqtt_pass_handle = param->add_char.attr_handle;
+        else if (uuid == CHAR_USER_ID_UUID) user_id_handle = param->add_char.attr_handle;
         break;
     }
     case ESP_GATTS_CONNECT_EVT:
@@ -302,19 +418,53 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             size_t len = (param->write.len < sizeof(temp_ssid)-1) ? param->write.len : sizeof(temp_ssid)-1;
             memcpy(temp_ssid, param->write.value, len);
             ESP_LOGI(LOG_TAG, "SSID rcv: %s", temp_ssid);
+            ssid_dirty = true;
         } 
         else if (param->write.handle == pass_handle) {
             memset(temp_pass, 0, sizeof(temp_pass));
             size_t len = (param->write.len < sizeof(temp_pass)-1) ? param->write.len : sizeof(temp_pass)-1;
             memcpy(temp_pass, param->write.value, len);
             ESP_LOGI(LOG_TAG, "PASS rcv: ***");
+            pass_dirty = true;
         } 
+        else if (param->write.handle == broker_handle) {
+            memset(temp_broker, 0, sizeof(temp_broker));
+            size_t len = (param->write.len < sizeof(temp_broker)-1) ? param->write.len : sizeof(temp_broker)-1;
+            memcpy(temp_broker, param->write.value, len);
+            ESP_LOGI(LOG_TAG, "BROKER rcv: %s", temp_broker);
+            broker_dirty = true;
+        }
+        else if (param->write.handle == mqtt_login_handle) {
+            memset(temp_mqtt_login, 0, sizeof(temp_mqtt_login));
+            size_t len = (param->write.len < sizeof(temp_mqtt_login)-1) ? param->write.len : sizeof(temp_mqtt_login)-1;
+            memcpy(temp_mqtt_login, param->write.value, len);
+            ESP_LOGI(LOG_TAG, "MQTT LOGIN rcv: %s", temp_mqtt_login);
+            mqtt_login_dirty = true;
+        }
+        else if (param->write.handle == mqtt_pass_handle) {
+            memset(temp_mqtt_pass, 0, sizeof(temp_mqtt_pass));
+            size_t len = (param->write.len < sizeof(temp_mqtt_pass)-1) ? param->write.len : sizeof(temp_mqtt_pass)-1;
+            memcpy(temp_mqtt_pass, param->write.value, len);
+            ESP_LOGI(LOG_TAG, "MQTT PASS rcv: ***");
+            mqtt_pass_dirty = true;
+        }
+        else if (param->write.handle == user_id_handle) {
+            memset(temp_user_id, 0, sizeof(temp_user_id));
+            size_t len = (param->write.len < sizeof(temp_user_id)-1) ? param->write.len : sizeof(temp_user_id)-1;
+            memcpy(temp_user_id, param->write.value, len);
+            ESP_LOGI(LOG_TAG, "USER ID rcv: %s", temp_user_id);
+            user_id_dirty = true;
+        }
         else if (param->write.handle == ctrl_handle) {
-            if (param->write.len > 0 && param->write.value[0] == '1') {
-                ESP_LOGI(LOG_TAG, "Saving credentials & Rebooting...");
+            // Potwierdzenie jako bajt 0x01 (nie jako string "1")
+            if (param->write.len == 1 && param->write.value[0] == 0x01) {
+                ESP_LOGI(LOG_TAG, "Saving provisioning settings (partial) & Rebooting...");
                 provisioning_done = true;
                 close_provisioning_window(true);
-                save_wifi_credentials(temp_ssid, temp_pass);
+                esp_err_t err = save_prov_settings_partial();
+                if (err != ESP_OK) {
+                    ESP_LOGE(LOG_TAG, "Failed to save provisioning settings: %s", esp_err_to_name(err));
+                }
                 restart_pending = true;
             }
         }
@@ -360,6 +510,7 @@ static void close_provisioning_window(bool completed) {
 }
 
 static void start_provisioning_window(void) {
+    reset_temp_buffers_and_flags();
     provisioning_done = false;
     provisioning_window_open = true;
 
@@ -410,12 +561,8 @@ static void button_task(void *pvParameter) {
             // Short Click
             int64_t press_ms = (esp_timer_get_time() - start_us) / 1000;
             if (press_ms < BUTTON_HOLD_RESET_MS) {
-                if (!wifi_credentials_present) {
-                    ESP_LOGI(LOG_TAG, "Click -> Start Config Window.");
-                    start_provisioning_window();
-                } else {
-                    ESP_LOGI(LOG_TAG, "WiFi configured. Ignoring short click.");
-                }
+                ESP_LOGI(LOG_TAG, "Click -> Start/Restart Config Window (always).");
+                start_provisioning_window();
             }
             vTaskDelay(pdMS_TO_TICKS(500)); // debounce
         }
@@ -453,4 +600,39 @@ void wifi_prov_init(void) {
 void wifi_prov_wait_connected(void) {
     // Czekaj na bit połączenia (bez timeoutu - blokuj do skutku)
     xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+}
+
+esp_err_t wifi_prov_get_config(wifi_prov_config_t *out) {
+    if (!out) return ESP_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(*out));
+
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &h);
+    if (err == ESP_ERR_NVS_NOT_FOUND || err == ESP_ERR_NVS_NOT_INITIALIZED) {
+        return ESP_OK;
+    }
+    if (err != ESP_OK) return err;
+
+    size_t len;
+
+    len = sizeof(out->ssid);
+    if (nvs_get_str(h, NVS_KEY_SSID, out->ssid, &len) != ESP_OK) out->ssid[0] = '\0';
+
+    len = sizeof(out->pass);
+    if (nvs_get_str(h, NVS_KEY_PASS, out->pass, &len) != ESP_OK) out->pass[0] = '\0';
+
+    len = sizeof(out->broker_uri);
+    if (nvs_get_str(h, NVS_KEY_BROKER, out->broker_uri, &len) != ESP_OK) out->broker_uri[0] = '\0';
+
+    len = sizeof(out->mqtt_login);
+    if (nvs_get_str(h, NVS_KEY_MQTT_LOGIN, out->mqtt_login, &len) != ESP_OK) out->mqtt_login[0] = '\0';
+
+    len = sizeof(out->mqtt_pass);
+    if (nvs_get_str(h, NVS_KEY_MQTT_PASS, out->mqtt_pass, &len) != ESP_OK) out->mqtt_pass[0] = '\0';
+
+    len = sizeof(out->user_id);
+    if (nvs_get_str(h, NVS_KEY_USER_ID, out->user_id, &len) != ESP_OK) out->user_id[0] = '\0';
+
+    nvs_close(h);
+    return ESP_OK;
 }

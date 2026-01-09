@@ -8,6 +8,9 @@
 #include "freertos/queue.h"
 #include "freertos/event_groups.h"
 #include "esp_event.h"
+#include "esp_mac.h"
+
+#include "wifi_prov.h"
 
 static const char *TAG = "MQTT_APP";
 
@@ -17,6 +20,57 @@ static esp_mqtt_client_handle_t client = NULL;
 static bool is_connected = false;
 static QueueHandle_t telemetry_queue = NULL;
 static mqtt_data_callback_t data_callback = NULL;
+
+static char s_user_id[WIFI_PROV_MAX_USER_ID] = {0};
+static char s_device_id[WIFI_PROV_MAX_MQTT_LOGIN] = {0};
+static char s_broker_uri[WIFI_PROV_MAX_BROKER_LEN] = {0};
+static char s_mqtt_pass[WIFI_PROV_MAX_MQTT_PASS] = {0};
+
+static void mac_to_hex(char *out, size_t out_len) {
+    if (!out || out_len < 13) {
+        if (out && out_len > 0) out[0] = '\0';
+        return;
+    }
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    snprintf(out, out_len, "%02X%02X%02X%02X%02X%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+static void mqtt_load_runtime_config(void) {
+    wifi_prov_config_t cfg;
+    esp_err_t err = wifi_prov_get_config(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "wifi_prov_get_config failed: %s", esp_err_to_name(err));
+        memset(&cfg, 0, sizeof(cfg));
+    }
+
+    // USER ID
+    if (cfg.user_id[0] != '\0') {
+        strlcpy(s_user_id, cfg.user_id, sizeof(s_user_id));
+    } else {
+        strlcpy(s_user_id, "unassigned", sizeof(s_user_id));
+    }
+
+    // DEVICE ID == MQTT login; fallback: MAC
+    if (cfg.mqtt_login[0] != '\0') {
+        strlcpy(s_device_id, cfg.mqtt_login, sizeof(s_device_id));
+    } else {
+        mac_to_hex(s_device_id, sizeof(s_device_id));
+    }
+
+    // MQTT PASS (może być puste)
+    strlcpy(s_mqtt_pass, cfg.mqtt_pass, sizeof(s_mqtt_pass));
+
+    // BROKER URI; fallback: CONFIG_BROKER_URL
+    if (cfg.broker_uri[0] != '\0') {
+        strlcpy(s_broker_uri, cfg.broker_uri, sizeof(s_broker_uri));
+    } else {
+        strlcpy(s_broker_uri, CONFIG_BROKER_URL, sizeof(s_broker_uri));
+    }
+
+    ESP_LOGI(TAG, "MQTT cfg: broker=%s user_id=%s device_id=%s", s_broker_uri, s_user_id, s_device_id);
+}
 
 static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
     esp_mqtt_event_handle_t event = event_data;
@@ -28,12 +82,12 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
         
         // 1. Subskrypcja komend
         char topic[128];
-        snprintf(topic, sizeof(topic), "garden/%s/%s/command", USER_ID, DEVICE_ID);
+        snprintf(topic, sizeof(topic), "garden/%s/%s/command", s_user_id, s_device_id);
         esp_mqtt_client_subscribe(client, topic, 1);
         ESP_LOGI(TAG, "Subskrypcja: %s", topic);
 
         // 2. Subskrypcja progów (NOWOŚĆ)
-        snprintf(topic, sizeof(topic), "garden/%s/%s/thresholds", USER_ID, DEVICE_ID);
+        snprintf(topic, sizeof(topic), "garden/%s/%s/thresholds", s_user_id, s_device_id);
         esp_mqtt_client_subscribe(client, topic, 1);
         ESP_LOGI(TAG, "Subskrypcja: %s", topic);
 
@@ -83,6 +137,8 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
 
 void mqtt_app_start(mqtt_data_callback_t cb) {
     data_callback = cb;
+
+    mqtt_load_runtime_config();
     
     telemetry_queue = xQueueCreate(QUEUE_SIZE, sizeof(telemetry_data_t));
     if (telemetry_queue == NULL) {
@@ -90,13 +146,13 @@ void mqtt_app_start(mqtt_data_callback_t cb) {
     }
 
     esp_mqtt_client_config_t mqtt5_cfg = {
-        .broker.address.uri = CONFIG_BROKER_URL, 
+        .broker.address.uri = s_broker_uri,
         .session.protocol_ver = MQTT_PROTOCOL_V_5,
         .network.disable_auto_reconnect = false,
         .credentials = {
-            .username = MQTT_USERNAME,
+            .username = s_device_id,
             .authentication = {
-                .password = MQTT_PASSWORD,
+                .password = s_mqtt_pass,
             },
         },
     };
@@ -114,10 +170,10 @@ void mqtt_app_send_alert(const char* type, const char* message) {
     if (!client) return;
     
     char topic[128];
-    snprintf(topic, sizeof(topic), "garden/%s/%s/alert", USER_ID, DEVICE_ID);
+    snprintf(topic, sizeof(topic), "garden/%s/%s/alert", s_user_id, s_device_id);
 
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "device", DEVICE_ID);
+    cJSON_AddStringToObject(root, "device", s_device_id);
     cJSON_AddStringToObject(root, "type", type);
     cJSON_AddStringToObject(root, "msg", message);
     cJSON_AddNumberToObject(root, "timestamp", esp_log_timestamp());
@@ -145,11 +201,11 @@ void mqtt_app_send_telemetry(telemetry_data_t *data) {
 
     // Jeśli jest połączenie, wysyłamy
     char topic[128];
-    snprintf(topic, sizeof(topic), "garden/%s/%s/telemetry", USER_ID, DEVICE_ID);
+    snprintf(topic, sizeof(topic), "garden/%s/%s/telemetry", s_user_id, s_device_id);
 
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "device", DEVICE_ID);
-    cJSON_AddStringToObject(root, "user", USER_ID);
+    cJSON_AddStringToObject(root, "device", s_device_id);
+    cJSON_AddStringToObject(root, "user", s_user_id);
     cJSON_AddNumberToObject(root, "timestamp", data->timestamp);
 
     cJSON *sensors = cJSON_CreateObject();
