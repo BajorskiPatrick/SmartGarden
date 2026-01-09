@@ -77,6 +77,8 @@ static bool provisioning_done = false;
 static bool ble_stack_started = false;
 static volatile bool wifi_credentials_present = false;
 
+static TaskHandle_t s_prov_ctrl_task_handle = NULL;
+
 #define PROV_ADV_TIMEOUT_MS (2 * 60 * 1000) // 2 minuty na konfigurację
 
 // --- Deklaracje wewn. ---
@@ -85,6 +87,7 @@ static void stop_ble_provisioning(void);
 static void close_provisioning_window(bool provisioning_completed);
 static void start_ble_stack(void);
 static void connect_wifi(const char* ssid, const char* pass);
+static void prov_ctrl_task(void *pvParameter);
 
 // --------------------------------------------------------------------------
 // 1. HELPERS (Timer, NVS)
@@ -101,23 +104,6 @@ static void provisioning_timeout_cb(void *arg) {
         ESP_LOGW(LOG_TAG, "Provisioning timeout (%d ms). Stopping advertising...", PROV_ADV_TIMEOUT_MS);
         close_provisioning_window(false);
     }
-}
-
-static esp_err_t save_wifi_credentials(const char* ssid, const char* pass) {
-    nvs_handle_t my_handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &my_handle);
-    if (err != ESP_OK) return err;
-
-    err = nvs_set_str(my_handle, NVS_KEY_SSID, ssid);
-    if (err == ESP_OK) err = nvs_set_str(my_handle, NVS_KEY_PASS, pass);
-    
-    if (err == ESP_OK) err = nvs_commit(my_handle);
-    nvs_close(my_handle);
-
-    if (err == ESP_OK) {
-        wifi_credentials_present = (ssid != NULL && ssid[0] != '\0');
-    }
-    return err;
 }
 
 static esp_err_t save_prov_settings_partial(void) {
@@ -324,7 +310,9 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         service_id.id.uuid.len = ESP_UUID_LEN_128;
         memcpy(service_id.id.uuid.uuid.uuid128, svc_uuid128, 16);
 
-        esp_ble_gatts_create_service(gatts_if, &service_id, 10);
+        // Potrzebujemy wystarczającej liczby handle'i na: service + (deklaracja+wartość) dla każdej charakterystyki.
+        // Mamy 7 charakterystyk, więc 10 to za mało i kolejne add_char mogą się nie pojawić w kliencie.
+        esp_ble_gatts_create_service(gatts_if, &service_id, 30);
         break;
     }
     case ESP_GATTS_CREATE_EVT: {
@@ -334,11 +322,11 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         esp_bt_uuid_t char_uuid;
         char_uuid.len = ESP_UUID_LEN_16;
 
-        // SSID
+        // SSID (READ+WRITE)
         char_uuid.uuid.uuid16 = CHAR_SSID_UUID;
         esp_ble_gatts_add_char(service_handle, &char_uuid,
-                               ESP_GATT_PERM_WRITE,
-                               ESP_GATT_CHAR_PROP_BIT_WRITE,
+                       ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+                       ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_WRITE,
                                NULL, NULL);
 
         // PASS
@@ -355,11 +343,11 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                                ESP_GATT_CHAR_PROP_BIT_WRITE,
                                NULL, NULL);
 
-        // BROKER
+        // BROKER (READ+WRITE)
         char_uuid.uuid.uuid16 = CHAR_BROKER_UUID;
         esp_ble_gatts_add_char(service_handle, &char_uuid,
-                               ESP_GATT_PERM_WRITE,
-                               ESP_GATT_CHAR_PROP_BIT_WRITE,
+                       ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+                       ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_WRITE,
                                NULL, NULL);
 
         // MQTT LOGIN (device_id)
@@ -393,6 +381,34 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         else if (uuid == CHAR_MQTT_LOGIN_UUID) mqtt_login_handle = param->add_char.attr_handle;
         else if (uuid == CHAR_MQTT_PASS_UUID) mqtt_pass_handle = param->add_char.attr_handle;
         else if (uuid == CHAR_USER_ID_UUID) user_id_handle = param->add_char.attr_handle;
+        break;
+    }
+
+    case ESP_GATTS_READ_EVT: {
+        esp_gatt_rsp_t rsp;
+        memset(&rsp, 0, sizeof(rsp));
+        rsp.attr_value.handle = param->read.handle;
+
+        if (param->read.handle == ssid_handle || param->read.handle == broker_handle) {
+            wifi_prov_config_t cfg;
+            if (wifi_prov_get_config(&cfg) == ESP_OK) {
+                const char *val = "";
+                if (param->read.handle == ssid_handle) {
+                    val = cfg.ssid;
+                } else if (param->read.handle == broker_handle) {
+                    val = cfg.broker_uri;
+                }
+
+                size_t vlen = strlen(val);
+                if (vlen > (sizeof(rsp.attr_value.value))) vlen = sizeof(rsp.attr_value.value);
+                rsp.attr_value.len = (uint16_t)vlen;
+                memcpy(rsp.attr_value.value, val, vlen);
+            }
+        } else {
+            rsp.attr_value.len = 0;
+        }
+
+        esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp);
         break;
     }
     case ESP_GATTS_CONNECT_EVT:
@@ -539,6 +555,16 @@ static void start_provisioning_window(void) {
 // 5. Button Task
 // --------------------------------------------------------------------------
 
+static void prov_ctrl_task(void *pvParameter) {
+    (void)pvParameter;
+    while (1) {
+        // Czekamy na sygnał z button_task (krótki klik)
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        ESP_LOGI(LOG_TAG, "Provisioning requested (button).");
+        start_provisioning_window();
+    }
+}
+
 static void button_task(void *pvParameter) {
     gpio_set_direction(BUTTON_GPIO, GPIO_MODE_INPUT);
     gpio_set_pull_mode(BUTTON_GPIO, GPIO_PULLUP_ONLY);
@@ -562,7 +588,12 @@ static void button_task(void *pvParameter) {
             int64_t press_ms = (esp_timer_get_time() - start_us) / 1000;
             if (press_ms < BUTTON_HOLD_RESET_MS) {
                 ESP_LOGI(LOG_TAG, "Click -> Start/Restart Config Window (always).");
-                start_provisioning_window();
+                if (s_prov_ctrl_task_handle) {
+                    xTaskNotifyGive(s_prov_ctrl_task_handle);
+                } else {
+                    // Fallback jeśli task nie wystartował
+                    start_provisioning_window();
+                }
             }
             vTaskDelay(pdMS_TO_TICKS(500)); // debounce
         }
@@ -579,6 +610,9 @@ void wifi_prov_init(void) {
     
     // Start button task
     xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL);
+
+    // Task, który odpala provisioning/BLE (żeby nie przepełniać stosu w button_task)
+    xTaskCreate(prov_ctrl_task, "prov_ctrl_task", 4096, NULL, 9, &s_prov_ctrl_task_handle);
 
     // Load Creds
     char ssid[32] = {0};
@@ -635,4 +669,19 @@ esp_err_t wifi_prov_get_config(wifi_prov_config_t *out) {
 
     nvs_close(h);
     return ESP_OK;
+}
+
+bool wifi_prov_is_fully_provisioned(void) {
+    wifi_prov_config_t cfg;
+    if (wifi_prov_get_config(&cfg) != ESP_OK) return false;
+
+    // WiFi pass może być puste dla OPEN, ale SSID musi istnieć.
+    if (cfg.ssid[0] == '\0') return false;
+
+    if (cfg.broker_uri[0] == '\0') return false;
+    if (cfg.mqtt_login[0] == '\0') return false;
+    if (cfg.mqtt_pass[0] == '\0') return false;
+    if (cfg.user_id[0] == '\0') return false;
+
+    return true;
 }

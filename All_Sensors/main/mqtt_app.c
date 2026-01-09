@@ -22,8 +22,9 @@ static QueueHandle_t telemetry_queue = NULL;
 static mqtt_data_callback_t data_callback = NULL;
 
 static char s_user_id[WIFI_PROV_MAX_USER_ID] = {0};
-static char s_device_id[WIFI_PROV_MAX_MQTT_LOGIN] = {0};
+static char s_device_id[13] = {0};
 static char s_broker_uri[WIFI_PROV_MAX_BROKER_LEN] = {0};
+static char s_mqtt_login[WIFI_PROV_MAX_MQTT_LOGIN] = {0};
 static char s_mqtt_pass[WIFI_PROV_MAX_MQTT_PASS] = {0};
 
 static void mac_to_hex(char *out, size_t out_len) {
@@ -45,31 +46,24 @@ static void mqtt_load_runtime_config(void) {
         memset(&cfg, 0, sizeof(cfg));
     }
 
-    // USER ID
-    if (cfg.user_id[0] != '\0') {
-        strlcpy(s_user_id, cfg.user_id, sizeof(s_user_id));
-    } else {
-        strlcpy(s_user_id, "unassigned", sizeof(s_user_id));
-    }
+    // DEVICE ID: zawsze MAC (do topiców, device identity)
+    mac_to_hex(s_device_id, sizeof(s_device_id));
 
-    // DEVICE ID == MQTT login; fallback: MAC
-    if (cfg.mqtt_login[0] != '\0') {
-        strlcpy(s_device_id, cfg.mqtt_login, sizeof(s_device_id));
-    } else {
-        mac_to_hex(s_device_id, sizeof(s_device_id));
-    }
+    // USER ID: tylko z provisioningu
+    strlcpy(s_user_id, cfg.user_id, sizeof(s_user_id));
 
-    // MQTT PASS (może być puste)
+    // BROKER URI: tylko z provisioningu
+    strlcpy(s_broker_uri, cfg.broker_uri, sizeof(s_broker_uri));
+
+    // MQTT LOGIN/PASS: tylko z provisioningu
+    strlcpy(s_mqtt_login, cfg.mqtt_login, sizeof(s_mqtt_login));
     strlcpy(s_mqtt_pass, cfg.mqtt_pass, sizeof(s_mqtt_pass));
 
-    // BROKER URI; fallback: CONFIG_BROKER_URL
-    if (cfg.broker_uri[0] != '\0') {
-        strlcpy(s_broker_uri, cfg.broker_uri, sizeof(s_broker_uri));
-    } else {
-        strlcpy(s_broker_uri, CONFIG_BROKER_URL, sizeof(s_broker_uri));
-    }
+    ESP_LOGI(TAG, "MQTT cfg: broker=%s user_id=%s device_id=%s mqtt_login=%s", s_broker_uri, s_user_id, s_device_id, s_mqtt_login);
+}
 
-    ESP_LOGI(TAG, "MQTT cfg: broker=%s user_id=%s device_id=%s", s_broker_uri, s_user_id, s_device_id);
+static bool mqtt_has_required_config(void) {
+    return (s_broker_uri[0] != '\0' && s_user_id[0] != '\0' && s_mqtt_login[0] != '\0' && s_mqtt_pass[0] != '\0');
 }
 
 static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
@@ -81,7 +75,7 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
         is_connected = true;
         
         // 1. Subskrypcja komend
-        char topic[128];
+        char topic[256];
         snprintf(topic, sizeof(topic), "garden/%s/%s/command", s_user_id, s_device_id);
         esp_mqtt_client_subscribe(client, topic, 1);
         ESP_LOGI(TAG, "Subskrypcja: %s", topic);
@@ -139,6 +133,13 @@ void mqtt_app_start(mqtt_data_callback_t cb) {
     data_callback = cb;
 
     mqtt_load_runtime_config();
+
+    if (!mqtt_has_required_config()) {
+        ESP_LOGW(TAG, "MQTT config incomplete. Not starting MQTT client.");
+        client = NULL;
+        is_connected = false;
+        return;
+    }
     
     telemetry_queue = xQueueCreate(QUEUE_SIZE, sizeof(telemetry_data_t));
     if (telemetry_queue == NULL) {
@@ -150,7 +151,7 @@ void mqtt_app_start(mqtt_data_callback_t cb) {
         .session.protocol_ver = MQTT_PROTOCOL_V_5,
         .network.disable_auto_reconnect = false,
         .credentials = {
-            .username = s_device_id,
+            .username = s_mqtt_login,
             .authentication = {
                 .password = s_mqtt_pass,
             },
@@ -169,7 +170,7 @@ bool mqtt_app_is_connected(void) {
 void mqtt_app_send_alert(const char* type, const char* message) {
     if (!client) return;
     
-    char topic[128];
+    char topic[256];
     snprintf(topic, sizeof(topic), "garden/%s/%s/alert", s_user_id, s_device_id);
 
     cJSON *root = cJSON_CreateObject();
@@ -200,7 +201,7 @@ void mqtt_app_send_telemetry(telemetry_data_t *data) {
     }
 
     // Jeśli jest połączenie, wysyłamy
-    char topic[128];
+    char topic[256];
     snprintf(topic, sizeof(topic), "garden/%s/%s/telemetry", s_user_id, s_device_id);
 
     cJSON *root = cJSON_CreateObject();

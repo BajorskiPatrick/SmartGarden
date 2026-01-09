@@ -48,4 +48,12 @@ void wifi_prov_wait_connected(void);
  */
 esp_err_t wifi_prov_get_config(wifi_prov_config_t *out);
 
+/**
+ * @brief Zwraca true jeśli komplet wymaganych danych jest zapisany w NVS.
+ *
+ * Wymagane: WiFi SSID, broker URI, MQTT login, MQTT password, User ID.
+ * (Hasło WiFi może być puste dla sieci otwartej.)
+ */
+bool wifi_prov_is_fully_provisioned(void);
+
 #endif // WIFI_PROV_H

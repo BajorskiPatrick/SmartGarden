@@ -200,11 +200,19 @@ void app_main(void)
     // Dzięki temu nie startujemy MQTT bez sieci
     ESP_LOGI(TAG, "Oczekiwanie na połączenie WiFi...");
     wifi_prov_wait_connected();
-    ESP_LOGI(TAG, "Połączono! Start MQTT.");
+
+    // Jeśli brakuje danych do MQTT (broker/mqtt/user_id), nie ma sensu prowadzić pomiarów.
+    // Użytkownik może uruchomić provisioning przyciskiem i po potwierdzeniu nastąpi restart.
+    while (!wifi_prov_is_fully_provisioned()) {
+        ESP_LOGW(TAG, "Brak pełnego provisioningu (SSID+broker+mqtt login/pass+user_id). Pomiary wstrzymane. Uruchom provisioning przyciskiem.");
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+
+    ESP_LOGI(TAG, "Połączono i provisioning kompletny. Start MQTT + pomiary.");
 
     // Start MQTT
     mqtt_app_start(process_incoming_data);
 
-    // Start zadania głównego
+    // Start zadania głównego (pomiary)
     xTaskCreate(publisher_task, "publisher_task", 4096, NULL, 5, NULL);
 }
