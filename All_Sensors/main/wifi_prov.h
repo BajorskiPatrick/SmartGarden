@@ -56,4 +56,11 @@ esp_err_t wifi_prov_get_config(wifi_prov_config_t *out);
  */
 bool wifi_prov_is_fully_provisioned(void);
 
+/**
+ * @brief Zwraca true jeśli provisioning jest aktualnie aktywny (okno otwarte / advertising / klient BLE podłączony).
+ *
+ * Przydatne do ograniczania logów w stanie "czekam na provisioning".
+ */
+bool wifi_prov_is_provisioning_active(void);
+
 #endif // WIFI_PROV_H

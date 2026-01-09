@@ -195,19 +195,20 @@ void app_main(void)
 
     // Inicjalizacja Provisioningu i WiFi
     wifi_prov_init();
+
+    // Jeśli brakuje danych do MQTT/WiFi, wstrzymujemy działanie i prosimy o provisioning.
+    // (W przeciwnym razie moglibyśmy zablokować się na wifi_prov_wait_connected gdy SSID nie jest jeszcze ustawione.)
+    while (!wifi_prov_is_fully_provisioned()) {
+        if (!wifi_prov_is_provisioning_active()) {
+            ESP_LOGW(TAG, "Brak pełnego provisioningu (SSID+broker+mqtt login/pass+user_id). Pomiary wstrzymane. Uruchom provisioning przyciskiem.");
+        }
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
     
     // Oczekiwanie na połączenie przed startem MQTT (blokujące)
     // Dzięki temu nie startujemy MQTT bez sieci
     ESP_LOGI(TAG, "Oczekiwanie na połączenie WiFi...");
     wifi_prov_wait_connected();
-
-    // Jeśli brakuje danych do MQTT (broker/mqtt/user_id), nie ma sensu prowadzić pomiarów.
-    // Użytkownik może uruchomić provisioning przyciskiem i po potwierdzeniu nastąpi restart.
-    while (!wifi_prov_is_fully_provisioned()) {
-        ESP_LOGW(TAG, "Brak pełnego provisioningu (SSID+broker+mqtt login/pass+user_id). Pomiary wstrzymane. Uruchom provisioning przyciskiem.");
-        vTaskDelay(pdMS_TO_TICKS(2000));
-    }
-
     ESP_LOGI(TAG, "Połączono i provisioning kompletny. Start MQTT + pomiary.");
 
     // Start MQTT

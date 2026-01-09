@@ -6,6 +6,7 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "esp_system.h"
+#include "esp_err.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -76,6 +77,15 @@ static bool provisioning_window_open = false;
 static bool provisioning_done = false;
 static bool ble_stack_started = false;
 static volatile bool wifi_credentials_present = false;
+static bool ble_client_connected = false;
+static bool ble_adv_active = false;
+
+static int s_ble_conn_id = -1;
+static esp_bd_addr_t s_ble_remote_bda = {0};
+static bool s_ble_remote_bda_valid = false;
+
+// adv_params jest definiowane niżej (sekcja BLE Logic), ale helper request_advertising_start() używa go wcześniej.
+static esp_ble_adv_params_t adv_params;
 
 static TaskHandle_t s_prov_ctrl_task_handle = NULL;
 
@@ -88,6 +98,11 @@ static void close_provisioning_window(bool provisioning_completed);
 static void start_ble_stack(void);
 static void connect_wifi(const char* ssid, const char* pass);
 static void prov_ctrl_task(void *pvParameter);
+static void start_prov_timeout_if_needed(void);
+static void stop_prov_timeout(void);
+static void log_missing_required_fields(const char *reason);
+static void log_ble_state(const char *where);
+static void request_advertising_start(const char *reason);
 
 // --------------------------------------------------------------------------
 // 1. HELPERS (Timer, NVS)
@@ -100,10 +115,104 @@ static void restart_timer_cb(void *arg) {
 
 static void provisioning_timeout_cb(void *arg) {
     (void)arg;
-    if (provisioning_window_open && !provisioning_done) {
+    if (provisioning_window_open && !provisioning_done && ble_adv_active && !ble_client_connected) {
         ESP_LOGW(LOG_TAG, "Provisioning timeout (%d ms). Stopping advertising...", PROV_ADV_TIMEOUT_MS);
         close_provisioning_window(false);
+        ESP_LOGW(LOG_TAG, "Provisioning incomplete. Device will not start measurements until configured.");
+
+        log_missing_required_fields("timeout");
     }
+}
+
+static void log_missing_required_fields(const char *reason) {
+    wifi_prov_config_t cfg;
+    if (wifi_prov_get_config(&cfg) != ESP_OK) {
+        ESP_LOGW(LOG_TAG,
+                 "Unable to read provisioning config from NVS to list missing fields (%s).",
+                 reason ? reason : "?");
+        return;
+    }
+
+    bool missing_ssid = (cfg.ssid[0] == '\0');
+    bool missing_broker = (cfg.broker_uri[0] == '\0');
+    bool missing_mqtt_login = (cfg.mqtt_login[0] == '\0');
+    bool missing_mqtt_pass = (cfg.mqtt_pass[0] == '\0');
+    bool missing_user_id = (cfg.user_id[0] == '\0');
+
+    if (missing_ssid || missing_broker || missing_mqtt_login || missing_mqtt_pass || missing_user_id) {
+        ESP_LOGW(LOG_TAG,
+                 "Missing provisioning fields (%s):%s%s%s%s%s",
+                 reason ? reason : "?",
+                 missing_ssid ? " ssid" : "",
+                 missing_broker ? " broker_uri" : "",
+                 missing_mqtt_login ? " mqtt_login" : "",
+                 missing_mqtt_pass ? " mqtt_pass" : "",
+                 missing_user_id ? " user_id" : "");
+    } else {
+        ESP_LOGI(LOG_TAG, "All required provisioning fields are present (%s).", reason ? reason : "?");
+    }
+}
+
+static void log_ble_state(const char *where) {
+    if (s_ble_remote_bda_valid) {
+        ESP_LOGI(LOG_TAG,
+                 "BLE state (%s): win_open=%d done=%d adv=%d connected=%d conn_id=%d remote=" ESP_BD_ADDR_STR,
+                 where ? where : "?",
+                 provisioning_window_open,
+                 provisioning_done,
+                 ble_adv_active,
+                 ble_client_connected,
+                 s_ble_conn_id,
+                 ESP_BD_ADDR_HEX(s_ble_remote_bda));
+    } else {
+        ESP_LOGI(LOG_TAG,
+                 "BLE state (%s): win_open=%d done=%d adv=%d connected=%d conn_id=%d",
+                 where ? where : "?",
+                 provisioning_window_open,
+                 provisioning_done,
+                 ble_adv_active,
+                 ble_client_connected,
+                 s_ble_conn_id);
+    }
+}
+
+static void request_advertising_start(const char *reason) {
+    if (!provisioning_window_open || provisioning_done) {
+        ESP_LOGI(LOG_TAG, "Skip advertising start (%s): window_open=%d done=%d",
+                 reason ? reason : "?", provisioning_window_open, provisioning_done);
+        return;
+    }
+    if (ble_client_connected) {
+        ESP_LOGI(LOG_TAG, "Skip advertising start (%s): client already connected (conn_id=%d)",
+                 reason ? reason : "?", s_ble_conn_id);
+        return;
+    }
+    if (ble_adv_active) {
+        ESP_LOGI(LOG_TAG, "Skip advertising start (%s): advertising already active", reason ? reason : "?");
+        return;
+    }
+
+    ESP_LOGI(LOG_TAG, "Starting advertising (%s)...", reason ? reason : "?");
+    esp_err_t err = esp_ble_gap_start_advertising(&adv_params);
+    if (err != ESP_OK) {
+        ESP_LOGE(LOG_TAG, "esp_ble_gap_start_advertising failed (%s): %s", reason ? reason : "?", esp_err_to_name(err));
+    }
+}
+
+static void stop_prov_timeout(void) {
+    if (prov_timeout_timer) {
+        esp_timer_stop(prov_timeout_timer);
+    }
+}
+
+static void start_prov_timeout_if_needed(void) {
+    if (!provisioning_window_open || provisioning_done) return;
+    if (ble_client_connected) return;
+    if (!ble_adv_active) return;
+    if (!prov_timeout_timer) return;
+
+    esp_timer_stop(prov_timeout_timer);
+    esp_timer_start_once(prov_timeout_timer, (int64_t)PROV_ADV_TIMEOUT_MS * 1000);
 }
 
 static esp_err_t save_prov_settings_partial(void) {
@@ -281,16 +390,23 @@ static esp_ble_adv_data_t adv_data = {
 static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
     switch (event) {
     case ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT:
-        if (provisioning_window_open && !provisioning_done) {
-            esp_ble_gap_start_advertising(&adv_params);
-        }
+        ESP_LOGI(LOG_TAG, "BLE adv data set complete");
+        request_advertising_start("adv_data_set_complete");
         break;
     case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
         if (param->adv_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
-            ESP_LOGE(LOG_TAG, "Advertising start failed");
+            ESP_LOGE(LOG_TAG, "Advertising start failed (status=%d)", param->adv_start_cmpl.status);
         } else {
             ESP_LOGI(LOG_TAG, "BLE Advertising started");
+            ble_adv_active = true;
+            start_prov_timeout_if_needed();
         }
+        log_ble_state("adv_start_complete");
+        break;
+    case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
+        ble_adv_active = false;
+        ESP_LOGI(LOG_TAG, "BLE Advertising stopped (status=%d)", param->adv_stop_cmpl.status);
+        log_ble_state("adv_stop_complete");
         break;
     default:
         break;
@@ -385,6 +501,12 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     }
 
     case ESP_GATTS_READ_EVT: {
+        const char *which = "unknown";
+        if (param->read.handle == ssid_handle) which = "ssid";
+        else if (param->read.handle == broker_handle) which = "broker_uri";
+
+        ESP_LOGI(LOG_TAG, "BLE READ: %s (handle=0x%04x, conn_id=%d)", which, param->read.handle, param->read.conn_id);
+
         esp_gatt_rsp_t rsp;
         memset(&rsp, 0, sizeof(rsp));
         rsp.attr_value.handle = param->read.handle;
@@ -412,11 +534,31 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         break;
     }
     case ESP_GATTS_CONNECT_EVT:
-        ESP_LOGI(LOG_TAG, "BLE Client Connected");
+        if (ble_client_connected) {
+            ESP_LOGW(LOG_TAG, "BLE CONNECT_EVT while already connected (old_conn_id=%d)", s_ble_conn_id);
+        }
+
+        s_ble_conn_id = param->connect.conn_id;
+        memcpy(s_ble_remote_bda, param->connect.remote_bda, sizeof(s_ble_remote_bda));
+        s_ble_remote_bda_valid = true;
+
+        ESP_LOGI(LOG_TAG, "BLE Client Connected: conn_id=%d remote=" ESP_BD_ADDR_STR,
+                 param->connect.conn_id, ESP_BD_ADDR_HEX(param->connect.remote_bda));
+        ble_client_connected = true;
+        ble_adv_active = false; // advertising zwykle przestaje działać po zestawieniu połączenia
+        stop_prov_timeout();
+        log_ble_state("connect_evt");
         break;
 
     case ESP_GATTS_DISCONNECT_EVT:
-        ESP_LOGI(LOG_TAG, "BLE Client Disconnected");
+        ESP_LOGI(LOG_TAG, "BLE Client Disconnected: conn_id=%d reason=0x%02x remote=" ESP_BD_ADDR_STR,
+                 param->disconnect.conn_id,
+                 param->disconnect.reason,
+                 ESP_BD_ADDR_HEX(param->disconnect.remote_bda));
+        ble_client_connected = false;
+        ble_adv_active = false;
+        s_ble_conn_id = -1;
+        s_ble_remote_bda_valid = false;
         if (restart_pending) {
             ESP_LOGI(LOG_TAG, "Restart pending. Waiting 1s...");
             esp_timer_create_args_t timer_args = { .callback = &restart_timer_cb, .name = "restart_timer" };
@@ -424,8 +566,28 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             esp_timer_create(&timer_args, &r_timer);
             esp_timer_start_once(r_timer, 1000000);
         } else if (provisioning_window_open && !provisioning_done) {
-            esp_ble_gap_start_advertising(&adv_params);
+            request_advertising_start("disconnect_evt");
         }
+        log_ble_state("disconnect_evt");
+        break;
+
+    case ESP_GATTS_CLOSE_EVT:
+        ESP_LOGI(LOG_TAG, "BLE connection closed (conn_id=%d)", param->close.conn_id);
+
+        // Zdarza się, że część klientów/stacków kończy połączenie CLOSE_EVT bez DISCONNECT_EVT.
+        // Żeby nie utknąć w stanie "połączone" i bez advertisingu, traktujemy CLOSE_EVT jako rozłączenie.
+        if (ble_client_connected || s_ble_conn_id != -1) {
+            ble_client_connected = false;
+            ble_adv_active = false;
+            s_ble_conn_id = -1;
+            s_ble_remote_bda_valid = false;
+
+            if (!restart_pending && provisioning_window_open && !provisioning_done) {
+                request_advertising_start("close_evt");
+            }
+        }
+
+        log_ble_state("close_evt");
         break;
 
     case ESP_GATTS_WRITE_EVT: {
@@ -515,20 +677,27 @@ static void start_ble_stack() {
 // --------------------------------------------------------------------------
 
 static void stop_ble_provisioning(void) {
+    ESP_LOGI(LOG_TAG, "Stopping advertising (stop_ble_provisioning)...");
     esp_ble_gap_stop_advertising();
+    ble_adv_active = false;
+    log_ble_state("stop_ble_provisioning");
 }
 
 static void close_provisioning_window(bool completed) {
+    ESP_LOGI(LOG_TAG, "Closing provisioning window (completed=%d)", completed);
     provisioning_window_open = false;
     provisioning_done = completed;
-    if (prov_timeout_timer) esp_timer_stop(prov_timeout_timer);
+    stop_prov_timeout();
     stop_ble_provisioning();
+    log_ble_state("close_provisioning_window");
 }
 
 static void start_provisioning_window(void) {
     reset_temp_buffers_and_flags();
     provisioning_done = false;
     provisioning_window_open = true;
+    // Nie resetujemy ble_client_connected tutaj: short-click może nadejść, gdy klient już jest podłączony.
+    // Resetowanie flagi rozwala spójność logów i stanu (CONNECT/DISCONNECT).
 
     if (prov_timeout_timer == NULL) {
         esp_timer_create_args_t timer_args = {
@@ -540,15 +709,17 @@ static void start_provisioning_window(void) {
         };
         esp_timer_create(&timer_args, &prov_timeout_timer);
     }
-    esp_timer_stop(prov_timeout_timer);
-    esp_timer_start_once(prov_timeout_timer, (int64_t)PROV_ADV_TIMEOUT_MS * 1000);
+    // Timeout uruchamiamy dopiero gdy advertising faktycznie ruszy i nikt nie jest połączony.
+    stop_prov_timeout();
 
     if (!ble_stack_started) {
         ble_stack_started = true;
         start_ble_stack();
     } else {
-        esp_ble_gap_start_advertising(&adv_params);
+        request_advertising_start("start_provisioning_window");
     }
+
+    log_ble_state("start_provisioning_window");
 }
 
 // --------------------------------------------------------------------------
@@ -561,6 +732,7 @@ static void prov_ctrl_task(void *pvParameter) {
         // Czekamy na sygnał z button_task (krótki klik)
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         ESP_LOGI(LOG_TAG, "Provisioning requested (button).");
+        log_ble_state("button_notify");
         start_provisioning_window();
     }
 }
@@ -588,6 +760,7 @@ static void button_task(void *pvParameter) {
             int64_t press_ms = (esp_timer_get_time() - start_us) / 1000;
             if (press_ms < BUTTON_HOLD_RESET_MS) {
                 ESP_LOGI(LOG_TAG, "Click -> Start/Restart Config Window (always).");
+                log_ble_state("button_click");
                 if (s_prov_ctrl_task_handle) {
                     xTaskNotifyGive(s_prov_ctrl_task_handle);
                 } else {
@@ -625,8 +798,12 @@ void wifi_prov_init(void) {
         ESP_LOGI(LOG_TAG, "Found stored credentials. Connecting...");
         wifi_init_sta();
         connect_wifi(ssid, pass);
-    } else {
-        ESP_LOGW(LOG_TAG, "No credentials. Starting Provisioning Mode.");
+    }
+
+    // Advertising ma odpalić zawsze, jeśli brakuje któregokolwiek z wymaganych pól.
+    if (!wifi_prov_is_fully_provisioned()) {
+        ESP_LOGW(LOG_TAG, "Provisioning incomplete. Starting BLE provisioning window...");
+        log_missing_required_fields("boot");
         start_provisioning_window();
     }
 }
@@ -684,4 +861,13 @@ bool wifi_prov_is_fully_provisioned(void) {
     if (cfg.user_id[0] == '\0') return false;
 
     return true;
+}
+
+bool wifi_prov_is_provisioning_active(void) {
+    // "Aktywny provisioning" rozumiemy jako: okno jest otwarte i provisioning nie został zakończony,
+    // albo trwa advertising, albo klient BLE jest podłączony.
+    if (provisioning_window_open && !provisioning_done) return true;
+    if (ble_adv_active) return true;
+    if (ble_client_connected) return true;
+    return false;
 }
