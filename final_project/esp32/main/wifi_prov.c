@@ -24,7 +24,15 @@
 #include "esp_timer.h"
 #include "esp_mac.h"
 
+#include "esp_attr.h"
+
+#include "mqtt_app.h"
+#include "alert_limiter.h"
+
 #define LOG_TAG "WIFI_PROV"
+
+#define FACTORY_RESET_MAGIC 0x53475246u // 'SGRF'
+RTC_NOINIT_ATTR static uint32_t s_factory_reset_marker = 0;
 
 // --- KONFIGURACJA GPIO (BOOT Button) ---
 #define BUTTON_GPIO GPIO_NUM_0 
@@ -133,6 +141,10 @@ static void provisioning_timeout_cb(void *arg) {
         ESP_LOGW(LOG_TAG, "Provisioning incomplete. Device will not start measurements until configured.");
 
         log_missing_required_fields("timeout");
+
+        if (alert_limiter_allow("provisioning.timeout", esp_log_timestamp(), 10 * 60 * 1000, NULL)) {
+            mqtt_app_send_alert2("provisioning.timeout", "warning", "provisioning", "Provisioning window timed out");
+        }
     }
 }
 
@@ -332,12 +344,29 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGW(LOG_TAG, "WiFi Disconnected. Retrying...");
         xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+
+        uint32_t suppressed = 0;
+        if (alert_limiter_allow("wifi.disconnected", esp_log_timestamp(), 60 * 1000, &suppressed)) {
+            int reason = -1;
+            if (event_data) {
+                wifi_event_sta_disconnected_t *d = (wifi_event_sta_disconnected_t *)event_data;
+                reason = (int)d->reason;
+            }
+            char details[128];
+            snprintf(details, sizeof(details), "{\"reason\":%d,\"suppressed\":%lu}", reason, (unsigned long)suppressed);
+            mqtt_app_send_alert2_details("wifi.disconnected", "warning", "wifi", "WiFi disconnected. Retrying...", details);
+        }
+
         esp_wifi_connect();
     } 
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(LOG_TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+
+        if (alert_limiter_allow("wifi.got_ip", esp_log_timestamp(), 5 * 60 * 1000, NULL)) {
+            mqtt_app_send_alert2("wifi.got_ip", "info", "wifi", "WiFi got IP");
+        }
     }
 }
 
@@ -671,6 +700,13 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                 esp_err_t err = save_prov_settings_partial();
                 if (err != ESP_OK) {
                     ESP_LOGE(LOG_TAG, "Failed to save provisioning settings: %s", esp_err_to_name(err));
+
+                    uint32_t suppressed = 0;
+                    if (alert_limiter_allow("provisioning.save_failed", esp_log_timestamp(), 5 * 60 * 1000, &suppressed)) {
+                        char details[128];
+                        snprintf(details, sizeof(details), "{\"err\":%d,\"suppressed\":%lu}", (int)err, (unsigned long)suppressed);
+                        mqtt_app_send_alert2_details("provisioning.save_failed", "error", "provisioning", "Failed to save provisioning settings", details);
+                    }
                 }
                 restart_pending = true;
             }
@@ -779,6 +815,8 @@ static void button_task(void *pvParameter) {
                 int64_t ms = (esp_timer_get_time() - start_us) / 1000;
                 if (ms >= BUTTON_HOLD_RESET_MS) {
                     ESP_LOGW(LOG_TAG, "Button held > 3s. Clearing NVS & Restart...");
+                    // Keep a marker across reset so we can report it later (MQTT may be unavailable now).
+                    s_factory_reset_marker = FACTORY_RESET_MAGIC;
                     clear_wifi_credentials();
                     esp_restart();
                 }
@@ -809,6 +847,13 @@ static void button_task(void *pvParameter) {
 
 void wifi_prov_init(void) {
     s_wifi_event_group = xEventGroupCreate();
+
+    if (s_factory_reset_marker == FACTORY_RESET_MAGIC) {
+        s_factory_reset_marker = 0;
+        if (alert_limiter_once("system.factory_reset")) {
+            mqtt_app_send_alert2("system.factory_reset", "warning", "system", "Factory reset requested via button");
+        }
+    }
     
     // Start button task
     xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL);
@@ -833,6 +878,11 @@ void wifi_prov_init(void) {
     if (!wifi_prov_is_fully_provisioned()) {
         ESP_LOGW(LOG_TAG, "Provisioning incomplete. Starting BLE provisioning window...");
         log_missing_required_fields("boot");
+
+        if (alert_limiter_once("provisioning.incomplete")) {
+            mqtt_app_send_alert2("provisioning.incomplete", "warning", "provisioning", "Device not fully provisioned. Measurements blocked until configured.");
+        }
+
         start_provisioning_window();
     }
 }

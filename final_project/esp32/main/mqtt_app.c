@@ -13,15 +13,21 @@
 #include "wifi_prov.h"
 #include "sensors.h"
 
+#include "alert_limiter.h"
+
 #include <math.h>
 
 static const char *TAG = "MQTT_APP";
 
 #define QUEUE_SIZE 50
+#define ALERT_QUEUE_SIZE 20
+
+#define PREINIT_ALERTS_MAX 12
 
 static esp_mqtt_client_handle_t client = NULL;
 static bool is_connected = false;
 static QueueHandle_t telemetry_queue = NULL;
+static QueueHandle_t alert_queue = NULL;
 static mqtt_data_callback_t data_callback = NULL;
 
 static char s_user_id[WIFI_PROV_MAX_USER_ID] = {0};
@@ -29,6 +35,96 @@ static char s_device_id[13] = {0};
 static char s_broker_uri[WIFI_PROV_MAX_BROKER_LEN] = {0};
 static char s_mqtt_login[WIFI_PROV_MAX_MQTT_LOGIN] = {0};
 static char s_mqtt_pass[WIFI_PROV_MAX_MQTT_PASS] = {0};
+
+typedef struct {
+    uint32_t timestamp_ms;
+    char code[48];
+    char severity[10];
+    char subsystem[16];
+    char message[128];
+    bool has_details;
+    char details_json[256];
+} mqtt_alert_record_t;
+
+static mqtt_alert_record_t s_preinit_alerts[PREINIT_ALERTS_MAX];
+static size_t s_preinit_alerts_count = 0;
+
+static bool s_telemetry_buffering = false;
+static uint32_t s_telemetry_dropped = 0;
+static uint32_t s_alert_dropped = 0;
+
+static void enqueue_preinit_alert(const mqtt_alert_record_t *rec) {
+    if (!rec) return;
+    if (s_preinit_alerts_count >= PREINIT_ALERTS_MAX) {
+        return;
+    }
+    s_preinit_alerts[s_preinit_alerts_count++] = *rec;
+}
+
+static void publish_alert_record(const mqtt_alert_record_t *rec) {
+    if (!client || !rec) return;
+
+    char topic[256];
+    snprintf(topic, sizeof(topic), "garden/%s/%s/alert", s_user_id, s_device_id);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "device", s_device_id);
+    cJSON_AddStringToObject(root, "user", s_user_id);
+    cJSON_AddNumberToObject(root, "timestamp", rec->timestamp_ms);
+
+    // Back-compat
+    cJSON_AddStringToObject(root, "type", rec->code);
+    cJSON_AddStringToObject(root, "msg", rec->message);
+
+    // v2
+    cJSON_AddStringToObject(root, "code", rec->code);
+    cJSON_AddStringToObject(root, "severity", rec->severity);
+    cJSON_AddStringToObject(root, "subsystem", rec->subsystem);
+    cJSON_AddStringToObject(root, "message", rec->message);
+
+    if (rec->has_details && rec->details_json[0] != '\0') {
+        cJSON *details = cJSON_Parse(rec->details_json);
+        if (cJSON_IsObject(details)) {
+            cJSON_AddItemToObject(root, "details", details);
+        } else {
+            if (details) cJSON_Delete(details);
+            cJSON_AddNullToObject(root, "details");
+        }
+    } else {
+        cJSON_AddNullToObject(root, "details");
+    }
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    if (json_str) {
+        esp_mqtt_client_publish(client, topic, json_str, 0, 2, 0);
+        free(json_str);
+    }
+
+    cJSON_Delete(root);
+}
+
+static void send_or_buffer_alert(const mqtt_alert_record_t *rec) {
+    if (!rec) return;
+
+    // If MQTT client not started yet, keep a small preinit buffer.
+    if (!client) {
+        enqueue_preinit_alert(rec);
+        return;
+    }
+
+    if (is_connected) {
+        publish_alert_record(rec);
+        return;
+    }
+
+    if (alert_queue) {
+        if (xQueueSend(alert_queue, rec, 0) != pdTRUE) {
+            s_alert_dropped++;
+        }
+    } else {
+        enqueue_preinit_alert(rec);
+    }
+}
 
 static void mac_to_hex(char *out, size_t out_len) {
     if (!out || out_len < 13) {
@@ -76,6 +172,15 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT Połączono");
         is_connected = true;
+
+        {
+            uint32_t suppressed = 0;
+            if (alert_limiter_allow("connection.mqtt_connected", esp_log_timestamp(), 60 * 1000, &suppressed)) {
+                char details[96];
+                snprintf(details, sizeof(details), "{\"suppressed\":%lu}", (unsigned long)suppressed);
+                mqtt_app_send_alert2_details("connection.mqtt_connected", "info", "mqtt", "MQTT connected", details);
+            }
+        }
         
         // 1. Subskrypcja komend (rozdzielone topici)
         char topic[256];
@@ -95,6 +200,44 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
         // 3. Publikacja capabilities (retained)
         mqtt_app_publish_capabilities();
 
+        // 3b. Flush preinit alerts -> alert_queue
+        if (alert_queue && s_preinit_alerts_count > 0) {
+            for (size_t i = 0; i < s_preinit_alerts_count; i++) {
+                (void)xQueueSend(alert_queue, &s_preinit_alerts[i], 0);
+            }
+            s_preinit_alerts_count = 0;
+        }
+
+        // 3c. Opróżnianie bufora alertów
+        if (alert_queue != NULL) {
+            mqtt_alert_record_t buffered_alert;
+            UBaseType_t alerts_waiting = uxQueueMessagesWaiting(alert_queue);
+            if (alerts_waiting > 0) {
+                ESP_LOGI(TAG, "Wysyłanie %d zbuforowanych alertów...", alerts_waiting);
+                while (xQueueReceive(alert_queue, &buffered_alert, 0) == pdTRUE) {
+                    publish_alert_record(&buffered_alert);
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                }
+            }
+        }
+
+        // Jeśli w trybie offline zabrakło miejsca na alerty, zgłoś to po odzyskaniu łączności.
+        if (s_alert_dropped > 0) {
+            uint32_t suppressed = 0;
+            if (alert_limiter_allow("alert.buffer_full_dropped", esp_log_timestamp(), 60 * 1000, &suppressed)) {
+                char msg[96];
+                snprintf(msg, sizeof(msg), "Dropped %lu alerts while offline", (unsigned long)s_alert_dropped);
+                char details[160];
+                snprintf(details, sizeof(details), "{\"dropped\":%lu,\"queue_size\":%d,\"suppressed\":%lu}",
+                         (unsigned long)s_alert_dropped, ALERT_QUEUE_SIZE, (unsigned long)suppressed);
+                mqtt_app_send_alert2_details("alert.buffer_full_dropped", "error", "mqtt", msg, details);
+            }
+            s_alert_dropped = 0;
+        }
+
+        // Reset stanu offline telemetry po reconnect
+        s_telemetry_buffering = false;
+
         // 4. Opróżnianie bufora
         if (telemetry_queue != NULL) {
             telemetry_data_t buffered_data;
@@ -112,6 +255,15 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "MQTT Rozłączono");
         is_connected = false;
+
+        {
+            uint32_t suppressed = 0;
+            if (alert_limiter_allow("connection.mqtt_disconnected", esp_log_timestamp(), 60 * 1000, &suppressed)) {
+                char details[96];
+                snprintf(details, sizeof(details), "{\"suppressed\":%lu}", (unsigned long)suppressed);
+                mqtt_app_send_alert2_details("connection.mqtt_disconnected", "warning", "mqtt", "MQTT disconnected", details);
+            }
+        }
         break;
     
     case MQTT_EVENT_DATA:
@@ -120,18 +272,37 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
             // Przekazujemy temat i dane do głównej aplikacji (z terminatorem null dla wygody)
             char *topic_str = strndup(event->topic, event->topic_len);
             char *payload_str = strndup(event->data, event->data_len);
-            
+
             if (topic_str && payload_str) {
                 data_callback(topic_str, payload_str, event->data_len);
+                free(topic_str);
+                free(payload_str);
+            } else {
+                free(topic_str);
+                free(payload_str);
+
+                uint32_t suppressed = 0;
+                if (alert_limiter_allow("mqtt.inbound_oom_drop", esp_log_timestamp(), 60 * 1000, &suppressed)) {
+                    char details[128];
+                    snprintf(details, sizeof(details), "{\"topic_len\":%d,\"payload_len\":%d,\"suppressed\":%lu}",
+                             event->topic_len, event->data_len, (unsigned long)suppressed);
+                    mqtt_app_send_alert2_details("mqtt.inbound_oom_drop", "error", "mqtt", "Dropped inbound MQTT message (OOM)", details);
+                }
             }
-            
-            free(topic_str);
-            free(payload_str);
         }
         break;
 
     case MQTT_EVENT_ERROR:
         ESP_LOGE(TAG, "MQTT Error");
+
+        {
+            uint32_t suppressed = 0;
+            if (alert_limiter_allow("connection.mqtt_error", esp_log_timestamp(), 60 * 1000, &suppressed)) {
+                char details[96];
+                snprintf(details, sizeof(details), "{\"suppressed\":%lu}", (unsigned long)suppressed);
+                mqtt_app_send_alert2_details("connection.mqtt_error", "error", "mqtt", "MQTT error event", details);
+            }
+        }
         break;
         
     default:
@@ -154,6 +325,11 @@ void mqtt_app_start(mqtt_data_callback_t cb) {
     telemetry_queue = xQueueCreate(QUEUE_SIZE, sizeof(telemetry_data_t));
     if (telemetry_queue == NULL) {
         ESP_LOGE(TAG, "Błąd tworzenia kolejki!");
+    }
+
+    alert_queue = xQueueCreate(ALERT_QUEUE_SIZE, sizeof(mqtt_alert_record_t));
+    if (alert_queue == NULL) {
+        ESP_LOGE(TAG, "Błąd tworzenia kolejki alertów!");
     }
 
     esp_mqtt_client_config_t mqtt5_cfg = {
@@ -206,23 +382,30 @@ static void add_bool_or_null(cJSON *obj, const char *key, bool include, bool ava
 }
 
 void mqtt_app_send_alert(const char* type, const char* message) {
-    if (!client) return;
-    
-    char topic[256];
-    snprintf(topic, sizeof(topic), "garden/%s/%s/alert", s_user_id, s_device_id);
+    // Legacy wrapper: keep old signature but send as v2 as well.
+    mqtt_app_send_alert2(type, "warning", "app", message);
+}
 
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "device", s_device_id);
-    cJSON_AddStringToObject(root, "type", type);
-    cJSON_AddStringToObject(root, "msg", message);
-    cJSON_AddNumberToObject(root, "timestamp", esp_log_timestamp());
+void mqtt_app_send_alert2(const char* code, const char* severity, const char* subsystem, const char* message) {
+    mqtt_app_send_alert2_details(code, severity, subsystem, message, NULL);
+}
 
-    char *json_str = cJSON_PrintUnformatted(root);
-    esp_mqtt_client_publish(client, topic, json_str, 0, 2, 0); 
-    ESP_LOGW(TAG, "ALERT: %s", json_str);
+void mqtt_app_send_alert2_details(const char* code, const char* severity, const char* subsystem, const char* message, const char* details_json) {
+    mqtt_alert_record_t rec;
+    memset(&rec, 0, sizeof(rec));
 
-    cJSON_Delete(root);
-    free(json_str);
+    rec.timestamp_ms = esp_log_timestamp();
+    strlcpy(rec.code, code ? code : "unknown", sizeof(rec.code));
+    strlcpy(rec.severity, severity ? severity : "warning", sizeof(rec.severity));
+    strlcpy(rec.subsystem, subsystem ? subsystem : "app", sizeof(rec.subsystem));
+    strlcpy(rec.message, message ? message : "", sizeof(rec.message));
+
+    if (details_json && details_json[0] != '\0') {
+        rec.has_details = true;
+        strlcpy(rec.details_json, details_json, sizeof(rec.details_json));
+    }
+
+    send_or_buffer_alert(&rec);
 }
 
 void mqtt_app_send_telemetry(telemetry_data_t *data) {
@@ -232,11 +415,31 @@ void mqtt_app_send_telemetry(telemetry_data_t *data) {
 void mqtt_app_send_telemetry_masked(telemetry_data_t *data, telemetry_fields_mask_t fields_mask) {
     // Jeśli brak połączenia, buforujemy
     if (!is_connected) {
+        if (!s_telemetry_buffering) {
+            s_telemetry_buffering = true;
+            uint32_t suppressed = 0;
+            if (alert_limiter_allow("telemetry.buffering_started", esp_log_timestamp(), 5 * 60 * 1000, &suppressed)) {
+                char details[128];
+                snprintf(details, sizeof(details), "{\"queue_size\":%d,\"suppressed\":%lu}", QUEUE_SIZE, (unsigned long)suppressed);
+                mqtt_app_send_alert2_details("telemetry.buffering_started", "warning", "telemetry", "MQTT offline. Buffering telemetry.", details);
+            }
+        }
+
         if (telemetry_queue) {
             if (xQueueSend(telemetry_queue, data, 0) == pdTRUE) {
                 ESP_LOGW(TAG, "Offline. Zbuforowano dane (ts: %lu)", data->timestamp);
             } else {
                 ESP_LOGE(TAG, "Offline. Bufor pełny!");
+                s_telemetry_dropped++;
+
+                uint32_t suppressed = 0;
+                if (alert_limiter_allow("telemetry.buffer_full_dropped", esp_log_timestamp(), 60 * 1000, &suppressed)) {
+                    char details[160];
+                    snprintf(details, sizeof(details), "{\"dropped\":%lu,\"queue_size\":%d,\"suppressed\":%lu}",
+                             (unsigned long)s_telemetry_dropped, QUEUE_SIZE, (unsigned long)suppressed);
+                    mqtt_app_send_alert2_details("telemetry.buffer_full_dropped", "error", "telemetry", "Telemetry dropped: offline queue full", details);
+                    s_telemetry_dropped = 0;
+                }
             }
         }
         return;

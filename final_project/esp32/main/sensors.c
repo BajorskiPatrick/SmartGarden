@@ -11,6 +11,9 @@
 #include "freertos/task.h"
 #include "esp_rom_sys.h" // Dla esp_rom_delay_us
 
+#include "mqtt_app.h"
+#include "alert_limiter.h"
+
 static const char *TAG = "SENSORS";
 
 // --- KONFIGURACJA SPRZĘTOWA ---
@@ -34,6 +37,10 @@ static bool s_has_veml7700 = false;
 static bool s_has_bme280 = false;
 static bool s_has_soil = true;
 static bool s_has_water = true;
+
+static bool s_prev_soil_ok = true;
+static bool s_prev_bme_ok = true;
+static bool s_prev_veml_ok = true;
 
 static long map_val(long x, long in_min, long in_max, long out_min, long out_max) {
     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
@@ -201,22 +208,42 @@ void sensors_read(telemetry_data_t *data) {
         data->soil_moisture = percentage;
         ESP_LOGD(TAG, "[GLEBA] ADC: %d, Wilgotność: %d %%", raw_adc, percentage);
         s_has_soil = true;
+
+        if (!s_prev_soil_ok) {
+            if (alert_limiter_allow("sensor.soil_recovered", esp_log_timestamp(), 60 * 1000, NULL)) {
+                mqtt_app_send_alert2("sensor.soil_recovered", "info", "sensor", "Soil sensor recovered");
+            }
+        }
+        s_prev_soil_ok = true;
     } else {
         data->soil_moisture = -1;
         s_has_soil = false;
         ESP_LOGW(TAG, "[GLEBA] ADC read failed: %s", esp_err_to_name(soil_err));
+
+        if (s_prev_soil_ok) {
+            uint32_t suppressed = 0;
+            if (alert_limiter_allow("sensor.soil_read_failed", esp_log_timestamp(), 5 * 60 * 1000, &suppressed)) {
+                char details[128];
+                snprintf(details, sizeof(details), "{\"err\":%d,\"suppressed\":%lu}", (int)soil_err, (unsigned long)suppressed);
+                mqtt_app_send_alert2_details("sensor.soil_read_failed", "warning", "sensor", "Soil ADC read failed", details);
+            }
+        }
+        s_prev_soil_ok = false;
     }
     
     // 2. BME280
     if (s_has_bme280) {
-        esp_err_t err = bmp280_force_measurement(&bme280_dev);
-        if (err == ESP_OK) {
+        bool bme_ok = false;
+        esp_err_t force_err = bmp280_force_measurement(&bme280_dev);
+        if (force_err == ESP_OK) {
             vTaskDelay(pdMS_TO_TICKS(50));
             float bme_temp = 0, bme_press = 0, bme_hum = 0;
-            if (bmp280_read_float(&bme280_dev, &bme_temp, &bme_press, &bme_hum) == ESP_OK) {
+            esp_err_t read_err = bmp280_read_float(&bme280_dev, &bme_temp, &bme_press, &bme_hum);
+            if (read_err == ESP_OK) {
                 data->temp = bme_temp;
                 data->pressure = bme_press / 100.0f;
                 data->humidity = bme_hum;
+                bme_ok = true;
             } else {
                 data->temp = NAN;
                 data->pressure = NAN;
@@ -227,6 +254,21 @@ void sensors_read(telemetry_data_t *data) {
             data->pressure = NAN;
             data->humidity = NAN;
         }
+
+        if (bme_ok && !s_prev_bme_ok) {
+            if (alert_limiter_allow("sensor.bme280_recovered", esp_log_timestamp(), 60 * 1000, NULL)) {
+                mqtt_app_send_alert2("sensor.bme280_recovered", "info", "sensor", "BME280 recovered");
+            }
+        } else if (!bme_ok && s_prev_bme_ok) {
+            uint32_t suppressed = 0;
+            if (alert_limiter_allow("sensor.bme280_read_failed", esp_log_timestamp(), 5 * 60 * 1000, &suppressed)) {
+                char details[160];
+                snprintf(details, sizeof(details), "{\"force_ok\":%s,\"force_err\":%d,\"suppressed\":%lu}",
+                         (force_err == ESP_OK) ? "true" : "false", (int)force_err, (unsigned long)suppressed);
+                mqtt_app_send_alert2_details("sensor.bme280_read_failed", "warning", "sensor", "BME280 read failed", details);
+            }
+        }
+        s_prev_bme_ok = bme_ok;
     } else {
         data->temp = NAN;
         data->pressure = NAN;
@@ -236,12 +278,28 @@ void sensors_read(telemetry_data_t *data) {
     // 3. VEML7700
     if (s_has_veml7700) {
         double lux_val = 0.0;
+        bool veml_ok = false;
         veml7700_auto_adjust_gain(&veml_sensor);
         if (veml7700_read_lux(&veml_sensor, &lux_val) == ESP_OK) {
             data->light_lux = (float)lux_val;
+            veml_ok = true;
         } else {
             data->light_lux = NAN;
         }
+
+        if (veml_ok && !s_prev_veml_ok) {
+            if (alert_limiter_allow("sensor.veml7700_recovered", esp_log_timestamp(), 60 * 1000, NULL)) {
+                mqtt_app_send_alert2("sensor.veml7700_recovered", "info", "sensor", "VEML7700 recovered");
+            }
+        } else if (!veml_ok && s_prev_veml_ok) {
+            uint32_t suppressed = 0;
+            if (alert_limiter_allow("sensor.veml7700_read_failed", esp_log_timestamp(), 5 * 60 * 1000, &suppressed)) {
+                char details[96];
+                snprintf(details, sizeof(details), "{\"suppressed\":%lu}", (unsigned long)suppressed);
+                mqtt_app_send_alert2_details("sensor.veml7700_read_failed", "warning", "sensor", "VEML7700 read failed", details);
+            }
+        }
+        s_prev_veml_ok = veml_ok;
     } else {
         data->light_lux = NAN;
     }
