@@ -20,6 +20,8 @@
 #include "mqtt_app.h"
 #include "wifi_prov.h" // DODANE
 
+#include "alert_limiter.h"
+
 #define TAG "MAIN_APP"
 #define PUBLISH_INTERVAL_MS 10000
 
@@ -207,11 +209,27 @@ void process_incoming_data(const char *topic, const char *payload, int len) {
             cJSON *d = cJSON_GetObjectItem(root, "duration");
             if (cJSON_IsNumber(d)) duration = d->valueint;
 
+            int requested = duration;
+            const int max_duration_s = 60;
+            if (duration < 1) duration = 1;
+            if (duration > max_duration_s) duration = max_duration_s;
+
+            if (requested != duration) {
+                uint32_t suppressed = 0;
+                if (alert_limiter_allow("command.watering_duration_clamped", esp_log_timestamp(), 10 * 1000, &suppressed)) {
+                    char details[128];
+                    snprintf(details, sizeof(details), "{\"requested\":%d,\"used\":%d,\"suppressed\":%lu}", requested, duration, (unsigned long)suppressed);
+                    mqtt_app_send_alert2_details("command.watering_duration_clamped", "warning", "command", "Watering duration clamped", details);
+                }
+            }
+
+            mqtt_app_send_alert2("command.watering_started", "info", "command", "Watering started");
+
             ESP_LOGI(TAG, "START PODLEWANIA (%d s)", duration);
             // TODO: sterowanie pompą GPIO
             vTaskDelay(pdMS_TO_TICKS(duration * 1000));
             ESP_LOGI(TAG, "STOP PODLEWANIA");
-            mqtt_app_send_alert("info", "Watering finished");
+            mqtt_app_send_alert2("command.watering_finished", "info", "command", "Watering finished");
 
             // Po podlewaniu sprawdź wodę
             int w_ok;
@@ -220,11 +238,26 @@ void process_incoming_data(const char *topic, const char *payload, int len) {
                 mqtt_app_send_alert("water_level_critical", "Refill water tank!");
             }
             cJSON_Delete(root);
+        } else {
+            uint32_t suppressed = 0;
+            if (alert_limiter_allow("command.invalid_json", esp_log_timestamp(), 10 * 1000, &suppressed)) {
+                char details[128];
+                snprintf(details, sizeof(details), "{\"topic\":\"water\",\"len\":%d,\"suppressed\":%lu}", len, (unsigned long)suppressed);
+                mqtt_app_send_alert2_details("command.invalid_json", "warning", "command", "Invalid JSON for command/water", details);
+            }
         }
     } 
     else if (strstr(topic, "/command/read")) {
         ESP_LOGI(TAG, "Odebrano komendę odczytu: %s", payload);
         cJSON *root = cJSON_Parse(payload);
+        if (!root) {
+            uint32_t suppressed = 0;
+            if (alert_limiter_allow("command.invalid_json", esp_log_timestamp(), 10 * 1000, &suppressed)) {
+                char details[128];
+                snprintf(details, sizeof(details), "{\"topic\":\"read\",\"len\":%d,\"suppressed\":%lu}", len, (unsigned long)suppressed);
+                mqtt_app_send_alert2_details("command.invalid_json", "warning", "command", "Invalid JSON for command/read; defaulting to all fields", details);
+            }
+        }
         telemetry_fields_mask_t mask = parse_fields_mask_from_json(root);
 
         telemetry_data_t data;
@@ -318,6 +351,20 @@ void process_incoming_data(const char *topic, const char *payload, int len) {
                          new_thr.hum_min, new_thr.hum_max,
                          new_thr.soil_min, new_thr.soil_max,
                          new_thr.light_min, new_thr.light_max);
+
+                uint32_t suppressed = 0;
+                if (alert_limiter_allow("thresholds.rejected", esp_log_timestamp(), 10 * 1000, &suppressed)) {
+                    char details[256];
+                    snprintf(details, sizeof(details),
+                             "{\"temp_min\":%.2f,\"temp_max\":%.2f,\"hum_min\":%.2f,\"hum_max\":%.2f,\"soil_min\":%d,\"soil_max\":%d,\"light_min\":%.2f,\"light_max\":%.2f,\"suppressed\":%lu}",
+                             new_thr.temp_min, new_thr.temp_max,
+                             new_thr.hum_min, new_thr.hum_max,
+                             new_thr.soil_min, new_thr.soil_max,
+                             new_thr.light_min, new_thr.light_max,
+                             (unsigned long)suppressed);
+                    mqtt_app_send_alert2_details("thresholds.rejected", "warning", "thresholds", "Threshold update rejected (min > max)", details);
+                }
+
                 cJSON_Delete(root);
                 return;
             }
@@ -330,8 +377,19 @@ void process_incoming_data(const char *topic, const char *payload, int len) {
                      thresholds.hum_min, thresholds.hum_max,
                      thresholds.soil_min, thresholds.soil_max,
                      thresholds.light_min, thresholds.light_max);
+
+            if (alert_limiter_allow("thresholds.applied", esp_log_timestamp(), 5 * 1000, NULL)) {
+                mqtt_app_send_alert2("thresholds.applied", "info", "thresholds", "Thresholds updated");
+            }
             
             cJSON_Delete(root);
+        } else {
+            uint32_t suppressed = 0;
+            if (alert_limiter_allow("thresholds.invalid_json", esp_log_timestamp(), 10 * 1000, &suppressed)) {
+                char details[96];
+                snprintf(details, sizeof(details), "{\"len\":%d,\"suppressed\":%lu}", len, (unsigned long)suppressed);
+                mqtt_app_send_alert2_details("thresholds.invalid_json", "warning", "thresholds", "Invalid JSON for thresholds", details);
+            }
         }
     }
 }
