@@ -47,8 +47,17 @@ public class DeviceController {
     private final com.smartgarden.service.SmartGardenService smartGardenService;
 
     @PostMapping("/{mac}/water")
-    public ResponseEntity<Void> triggerWatering(@PathVariable String mac) {
+    public void waterPlant(@PathVariable String mac) {
         smartGardenService.sendWaterCommand(mac);
-        return ResponseEntity.ok().build();
+    }
+
+    @GetMapping("/{mac}/settings")
+    public com.smartgarden.dto.DeviceSettingsDto getSettings(@PathVariable String mac) {
+        return smartGardenService.getDeviceSettings(mac);
+    }
+
+    @PostMapping("/{mac}/settings")
+    public void updateSettings(@PathVariable String mac, @RequestBody com.smartgarden.dto.DeviceSettingsDto dto) {
+        smartGardenService.updateDeviceSettings(mac, dto);
     }
 }
