@@ -39,6 +39,7 @@
 #define CHAR_MQTT_LOGIN_UUID 0xFF05
 #define CHAR_MQTT_PASS_UUID 0xFF06
 #define CHAR_USER_ID_UUID   0xFF07
+#define CHAR_DEVICE_ID_UUID 0xFF08
 
 // --- NVS Keys ---
 #define NVS_NAMESPACE "wifi_config"
@@ -55,7 +56,7 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 
 static uint16_t ssid_handle, pass_handle, ctrl_handle;
-static uint16_t broker_handle, mqtt_login_handle, mqtt_pass_handle, user_id_handle;
+static uint16_t broker_handle, mqtt_login_handle, mqtt_pass_handle, user_id_handle, device_id_handle;
 static bool restart_pending = false;
 
 static char temp_ssid[32] = {0};
@@ -86,6 +87,17 @@ static bool s_ble_remote_bda_valid = false;
 
 // adv_params jest definiowane niżej (sekcja BLE Logic), ale helper request_advertising_start() używa go wcześniej.
 static esp_ble_adv_params_t adv_params;
+
+static void get_device_id_mac_hex(char *out, size_t out_len) {
+    if (!out || out_len < 13) {
+        if (out && out_len > 0) out[0] = '\0';
+        return;
+    }
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    snprintf(out, out_len, "%02X%02X%02X%02X%02X%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
 
 static TaskHandle_t s_prov_ctrl_task_handle = NULL;
 
@@ -486,6 +498,13 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                                ESP_GATT_PERM_WRITE,
                                ESP_GATT_CHAR_PROP_BIT_WRITE,
                                NULL, NULL);
+
+        // DEVICE ID (MAC) - READ ONLY
+        char_uuid.uuid.uuid16 = CHAR_DEVICE_ID_UUID;
+        esp_ble_gatts_add_char(service_handle, &char_uuid,
+                               ESP_GATT_PERM_READ,
+                               ESP_GATT_CHAR_PROP_BIT_READ,
+                               NULL, NULL);
         break;
     }
     case ESP_GATTS_ADD_CHAR_EVT: {
@@ -497,6 +516,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         else if (uuid == CHAR_MQTT_LOGIN_UUID) mqtt_login_handle = param->add_char.attr_handle;
         else if (uuid == CHAR_MQTT_PASS_UUID) mqtt_pass_handle = param->add_char.attr_handle;
         else if (uuid == CHAR_USER_ID_UUID) user_id_handle = param->add_char.attr_handle;
+        else if (uuid == CHAR_DEVICE_ID_UUID) device_id_handle = param->add_char.attr_handle;
         break;
     }
 
@@ -504,6 +524,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         const char *which = "unknown";
         if (param->read.handle == ssid_handle) which = "ssid";
         else if (param->read.handle == broker_handle) which = "broker_uri";
+        else if (param->read.handle == device_id_handle) which = "device_id";
 
         ESP_LOGI(LOG_TAG, "BLE READ: %s (handle=0x%04x, conn_id=%d)", which, param->read.handle, param->read.conn_id);
 
@@ -526,6 +547,14 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                 rsp.attr_value.len = (uint16_t)vlen;
                 memcpy(rsp.attr_value.value, val, vlen);
             }
+        } else if (param->read.handle == device_id_handle) {
+            char dev_id[13] = {0};
+            get_device_id_mac_hex(dev_id, sizeof(dev_id));
+
+            size_t vlen = strlen(dev_id);
+            if (vlen > (sizeof(rsp.attr_value.value))) vlen = sizeof(rsp.attr_value.value);
+            rsp.attr_value.len = (uint16_t)vlen;
+            memcpy(rsp.attr_value.value, dev_id, vlen);
         } else {
             rsp.attr_value.len = 0;
         }
