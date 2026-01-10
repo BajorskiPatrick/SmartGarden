@@ -1,0 +1,63 @@
+version: '3.8'
+services:
+  mosquitto:
+    image: iegomez/mosquitto-go-auth:2.3.0
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    environment:
+      - PROVISIONING_ENABLED=false
+      - BACKEND=postgres
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DBNAME=garden_db
+      - PG_USER=admin
+      - PG_PASSWORD=admin
+      - PG_SSLMODE=disable
+      - PG_CONNECT_TRIES=10
+      - AUTH_OPT_PG_USERQUERY=select password_hash from mqtt_users where username = $1 limit 1
+      - AUTH_OPT_PG_SUPERUSERQUERY=select is_superuser from mqtt_users where username = $1 limit 1
+      - AUTH_OPT_PG_ACLQUERY=select topic from mqtt_acls where username = $1 AND (rw >= $2 or rw = 3)
+      - AUTH_OPT_PG_HASHER=bcrypt
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: garden_db
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/garden_db
+      SPRING_DATASOURCE_USERNAME: admin
+      SPRING_DATASOURCE_PASSWORD: admin
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      MQTT_BROKER_URL: tcp://mosquitto:1883
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:
