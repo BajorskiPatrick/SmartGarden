@@ -11,6 +11,9 @@
 #include "esp_mac.h"
 
 #include "wifi_prov.h"
+#include "sensors.h"
+
+#include <math.h>
 
 static const char *TAG = "MQTT_APP";
 
@@ -74,9 +77,13 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
         ESP_LOGI(TAG, "MQTT Połączono");
         is_connected = true;
         
-        // 1. Subskrypcja komend
+        // 1. Subskrypcja komend (rozdzielone topici)
         char topic[256];
-        snprintf(topic, sizeof(topic), "garden/%s/%s/command", s_user_id, s_device_id);
+        snprintf(topic, sizeof(topic), "garden/%s/%s/command/water", s_user_id, s_device_id);
+        esp_mqtt_client_subscribe(client, topic, 1);
+        ESP_LOGI(TAG, "Subskrypcja: %s", topic);
+
+        snprintf(topic, sizeof(topic), "garden/%s/%s/command/read", s_user_id, s_device_id);
         esp_mqtt_client_subscribe(client, topic, 1);
         ESP_LOGI(TAG, "Subskrypcja: %s", topic);
 
@@ -85,7 +92,10 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
         esp_mqtt_client_subscribe(client, topic, 1);
         ESP_LOGI(TAG, "Subskrypcja: %s", topic);
 
-        // 3. Opróżnianie bufora
+        // 3. Publikacja capabilities (retained)
+        mqtt_app_publish_capabilities();
+
+        // 4. Opróżnianie bufora
         if (telemetry_queue != NULL) {
             telemetry_data_t buffered_data;
             UBaseType_t items_waiting = uxQueueMessagesWaiting(telemetry_queue);
@@ -167,6 +177,34 @@ bool mqtt_app_is_connected(void) {
     return is_connected;
 }
 
+static double round2(double v) {
+    return round(v * 100.0) / 100.0;
+}
+
+static void add_number_or_null(cJSON *obj, const char *key, bool include, bool available, double v) {
+    if (!include || !available || isnan(v)) {
+        cJSON_AddNullToObject(obj, key);
+        return;
+    }
+    cJSON_AddNumberToObject(obj, key, round2(v));
+}
+
+static void add_int_or_null(cJSON *obj, const char *key, bool include, bool available, int v) {
+    if (!include || !available || v < 0) {
+        cJSON_AddNullToObject(obj, key);
+        return;
+    }
+    cJSON_AddNumberToObject(obj, key, v);
+}
+
+static void add_bool_or_null(cJSON *obj, const char *key, bool include, bool available, bool v) {
+    if (!include || !available) {
+        cJSON_AddNullToObject(obj, key);
+        return;
+    }
+    cJSON_AddBoolToObject(obj, key, v);
+}
+
 void mqtt_app_send_alert(const char* type, const char* message) {
     if (!client) return;
     
@@ -188,6 +226,10 @@ void mqtt_app_send_alert(const char* type, const char* message) {
 }
 
 void mqtt_app_send_telemetry(telemetry_data_t *data) {
+    mqtt_app_send_telemetry_masked(data, TELEMETRY_FIELDS_ALL);
+}
+
+void mqtt_app_send_telemetry_masked(telemetry_data_t *data, telemetry_fields_mask_t fields_mask) {
     // Jeśli brak połączenia, buforujemy
     if (!is_connected) {
         if (telemetry_queue) {
@@ -210,25 +252,73 @@ void mqtt_app_send_telemetry(telemetry_data_t *data) {
     cJSON_AddNumberToObject(root, "timestamp", data->timestamp);
 
     cJSON *sensors = cJSON_CreateObject();
-    char temp_str[10], hum_str[10], press_str[10], lux_str[10], soil_str[10];
+    telemetry_fields_mask_t available = sensors_get_available_fields_mask();
 
-    snprintf(temp_str, sizeof(temp_str), "%.2f", data->temp);
-    snprintf(hum_str, sizeof(hum_str), "%.2f", data->humidity);
-    snprintf(press_str, sizeof(press_str), "%.2f", data->pressure);
-    snprintf(lux_str, sizeof(lux_str), "%.2f", data->light_lux);
-    snprintf(soil_str, sizeof(soil_str), "%d", data->soil_moisture);
+    bool inc_soil = (fields_mask & TELEMETRY_FIELD_SOIL) != 0;
+    bool inc_temp = (fields_mask & TELEMETRY_FIELD_TEMP) != 0;
+    bool inc_hum = (fields_mask & TELEMETRY_FIELD_HUM) != 0;
+    bool inc_press = (fields_mask & TELEMETRY_FIELD_PRESS) != 0;
+    bool inc_light = (fields_mask & TELEMETRY_FIELD_LIGHT) != 0;
+    bool inc_water = (fields_mask & TELEMETRY_FIELD_WATER) != 0;
 
-    cJSON_AddStringToObject(sensors, "soil_moisture_pct", soil_str);
-    cJSON_AddStringToObject(sensors, "air_temperature_c", temp_str);
-    cJSON_AddStringToObject(sensors, "air_humidity_pct", hum_str);
-    cJSON_AddStringToObject(sensors, "pressure_hpa", press_str);
-    cJSON_AddStringToObject(sensors, "light_lux", lux_str);
-    cJSON_AddBoolToObject(sensors, "water_tank_ok", (data->water_ok == 0));
+    bool av_soil = (available & TELEMETRY_FIELD_SOIL) != 0;
+    bool av_temp = (available & TELEMETRY_FIELD_TEMP) != 0;
+    bool av_hum = (available & TELEMETRY_FIELD_HUM) != 0;
+    bool av_press = (available & TELEMETRY_FIELD_PRESS) != 0;
+    bool av_light = (available & TELEMETRY_FIELD_LIGHT) != 0;
+    bool av_water = (available & TELEMETRY_FIELD_WATER) != 0;
+
+    add_int_or_null(sensors, "soil_moisture_pct", inc_soil, av_soil, data->soil_moisture);
+    add_number_or_null(sensors, "air_temperature_c", inc_temp, av_temp, data->temp);
+    add_number_or_null(sensors, "air_humidity_pct", inc_hum, av_hum, data->humidity);
+    add_number_or_null(sensors, "pressure_hpa", inc_press, av_press, data->pressure);
+    add_number_or_null(sensors, "light_lux", inc_light, av_light, data->light_lux);
+    add_bool_or_null(sensors, "water_tank_ok", inc_water, av_water, (data->water_ok == 0));
 
     cJSON_AddItemToObject(root, "sensors", sensors);
 
     char *json_str = cJSON_PrintUnformatted(root);
     esp_mqtt_client_publish(client, topic, json_str, 0, 1, 0);
+
+    cJSON_Delete(root);
+    free(json_str);
+}
+
+void mqtt_app_publish_capabilities(void) {
+    if (!client) return;
+    if (s_user_id[0] == '\0' || s_device_id[0] == '\0') return;
+
+    char topic[256];
+    snprintf(topic, sizeof(topic), "garden/%s/%s/capabilities", s_user_id, s_device_id);
+
+    telemetry_fields_mask_t available = sensors_get_available_fields_mask();
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "device", s_device_id);
+    cJSON_AddStringToObject(root, "user", s_user_id);
+    cJSON_AddNumberToObject(root, "timestamp", esp_log_timestamp());
+
+    cJSON *fields = cJSON_CreateArray();
+    if (available & TELEMETRY_FIELD_SOIL) cJSON_AddItemToArray(fields, cJSON_CreateString("soil_moisture_pct"));
+    if (available & TELEMETRY_FIELD_TEMP) cJSON_AddItemToArray(fields, cJSON_CreateString("air_temperature_c"));
+    if (available & TELEMETRY_FIELD_HUM) cJSON_AddItemToArray(fields, cJSON_CreateString("air_humidity_pct"));
+    if (available & TELEMETRY_FIELD_PRESS) cJSON_AddItemToArray(fields, cJSON_CreateString("pressure_hpa"));
+    if (available & TELEMETRY_FIELD_LIGHT) cJSON_AddItemToArray(fields, cJSON_CreateString("light_lux"));
+    if (available & TELEMETRY_FIELD_WATER) cJSON_AddItemToArray(fields, cJSON_CreateString("water_tank_ok"));
+    cJSON_AddItemToObject(root, "fields", fields);
+
+    cJSON *measured = cJSON_CreateObject();
+    cJSON_AddBoolToObject(measured, "soil_moisture_pct", (available & TELEMETRY_FIELD_SOIL) != 0);
+    cJSON_AddBoolToObject(measured, "air_temperature_c", (available & TELEMETRY_FIELD_TEMP) != 0);
+    cJSON_AddBoolToObject(measured, "air_humidity_pct", (available & TELEMETRY_FIELD_HUM) != 0);
+    cJSON_AddBoolToObject(measured, "pressure_hpa", (available & TELEMETRY_FIELD_PRESS) != 0);
+    cJSON_AddBoolToObject(measured, "light_lux", (available & TELEMETRY_FIELD_LIGHT) != 0);
+    cJSON_AddBoolToObject(measured, "water_tank_ok", (available & TELEMETRY_FIELD_WATER) != 0);
+    cJSON_AddItemToObject(root, "measured", measured);
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    // retained=1 aby backend mógł odczytać stan po subskrypcji
+    esp_mqtt_client_publish(client, topic, json_str, 0, 1, 1);
 
     cJSON_Delete(root);
     free(json_str);

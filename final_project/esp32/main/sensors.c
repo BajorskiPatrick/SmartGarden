@@ -30,6 +30,11 @@ static veml7700_handle_t veml_sensor;
 static bmp280_t bme280_dev;
 static adc_oneshot_unit_handle_t adc1_handle;
 
+static bool s_has_veml7700 = false;
+static bool s_has_bme280 = false;
+static bool s_has_soil = true;
+static bool s_has_water = true;
+
 static long map_val(long x, long in_min, long in_max, long out_min, long out_max) {
     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
@@ -126,25 +131,52 @@ esp_err_t sensors_init(void) {
     if (res == ESP_OK) {
         res = veml7700_init(&veml_sensor);
         if (res == ESP_OK) {
+            s_has_veml7700 = true;
             veml7700_set_config(&veml_sensor, VEML7700_GAIN_2, VEML7700_IT_100MS, VEML7700_PERS_1);
             veml7700_set_power_saving(&veml_sensor, true, VEML7700_PSM_MODE_4);
             ESP_LOGI(TAG, "VEML7700 skonfigurowany (PSM włączone)!");
         } else {
+            s_has_veml7700 = false;
              ESP_LOGE(TAG, "VEML7700 błąd init: %s", esp_err_to_name(res));
         }
     } else {
+        s_has_veml7700 = false;
         ESP_LOGE(TAG, "VEML7700 błąd deskryptora: %s", esp_err_to_name(res));
     }
 
     // 4. BME280
     if (bme280_sensor_init() == ESP_OK) {
+        s_has_bme280 = true;
         ESP_LOGI(TAG, "BME280 zainicjowany pomyślnie (Tryb FORCED)!");
     } else {
+        s_has_bme280 = false;
         ESP_LOGW(TAG, "BME280 problem z inicjalizacją");
         // Nie blokujemy startu, jeśli jeden czujnik padnie
     }
 
     return ESP_OK;
+}
+
+telemetry_fields_mask_t sensors_get_available_fields_mask(void) {
+    telemetry_fields_mask_t mask = 0;
+
+    if (s_has_soil) {
+        mask |= TELEMETRY_FIELD_SOIL;
+    }
+
+    if (s_has_bme280) {
+        mask |= (TELEMETRY_FIELD_TEMP | TELEMETRY_FIELD_HUM | TELEMETRY_FIELD_PRESS);
+    }
+
+    if (s_has_veml7700) {
+        mask |= TELEMETRY_FIELD_LIGHT;
+    }
+
+    if (s_has_water) {
+        mask |= TELEMETRY_FIELD_WATER;
+    }
+
+    return mask;
 }
 
 void sensors_get_water_status(int *water_ok) {
@@ -161,34 +193,57 @@ void sensors_get_water_status(int *water_ok) {
 void sensors_read(telemetry_data_t *data) {
     // 1. Gleba
     int raw_adc = 0;
-    ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, SOIL_ADC_CHANNEL, &raw_adc));
-    int percentage = map_val(raw_adc, SOIL_DRY_VAL, SOIL_WET_VAL, 0, 100);
-    if (percentage < 0) percentage = 0;
-    if (percentage > 100) percentage = 100;
-    data->soil_moisture = percentage;
-    ESP_LOGD(TAG, "[GLEBA] ADC: %d, Wilgotność: %d %%", raw_adc, percentage);
+    esp_err_t soil_err = adc_oneshot_read(adc1_handle, SOIL_ADC_CHANNEL, &raw_adc);
+    if (soil_err == ESP_OK) {
+        int percentage = map_val(raw_adc, SOIL_DRY_VAL, SOIL_WET_VAL, 0, 100);
+        if (percentage < 0) percentage = 0;
+        if (percentage > 100) percentage = 100;
+        data->soil_moisture = percentage;
+        ESP_LOGD(TAG, "[GLEBA] ADC: %d, Wilgotność: %d %%", raw_adc, percentage);
+        s_has_soil = true;
+    } else {
+        data->soil_moisture = -1;
+        s_has_soil = false;
+        ESP_LOGW(TAG, "[GLEBA] ADC read failed: %s", esp_err_to_name(soil_err));
+    }
     
     // 2. BME280
-    esp_err_t err = bmp280_force_measurement(&bme280_dev);
-    if (err == ESP_OK) {
-        vTaskDelay(pdMS_TO_TICKS(50));
-        float bme_temp = 0, bme_press = 0, bme_hum = 0;
-        if (bmp280_read_float(&bme280_dev, &bme_temp, &bme_press, &bme_hum) == ESP_OK) {
-            data->temp = bme_temp;
-            data->pressure = bme_press / 100.0f; 
-            data->humidity = bme_hum;
+    if (s_has_bme280) {
+        esp_err_t err = bmp280_force_measurement(&bme280_dev);
+        if (err == ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            float bme_temp = 0, bme_press = 0, bme_hum = 0;
+            if (bmp280_read_float(&bme280_dev, &bme_temp, &bme_press, &bme_hum) == ESP_OK) {
+                data->temp = bme_temp;
+                data->pressure = bme_press / 100.0f;
+                data->humidity = bme_hum;
+            } else {
+                data->temp = NAN;
+                data->pressure = NAN;
+                data->humidity = NAN;
+            }
         } else {
-            data->temp = 0; data->pressure = 0; data->humidity = 0;
+            data->temp = NAN;
+            data->pressure = NAN;
+            data->humidity = NAN;
         }
+    } else {
+        data->temp = NAN;
+        data->pressure = NAN;
+        data->humidity = NAN;
     }
 
     // 3. VEML7700
-    double lux_val = 0.0;
-    veml7700_auto_adjust_gain(&veml_sensor);
-    if (veml7700_read_lux(&veml_sensor, &lux_val) == ESP_OK) {
-        data->light_lux = (float)lux_val;
+    if (s_has_veml7700) {
+        double lux_val = 0.0;
+        veml7700_auto_adjust_gain(&veml_sensor);
+        if (veml7700_read_lux(&veml_sensor, &lux_val) == ESP_OK) {
+            data->light_lux = (float)lux_val;
+        } else {
+            data->light_lux = NAN;
+        }
     } else {
-        data->light_lux = -1.0;
+        data->light_lux = NAN;
     }
 
     // 4. Woda

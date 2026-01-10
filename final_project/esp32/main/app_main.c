@@ -11,6 +11,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include <math.h>
+
 #include "common_defs.h"
 #include "sensors.h"
 #include "mqtt_app.h"
@@ -34,11 +36,56 @@ static bool alert_soil_so_far = false;
 static bool alert_light_so_far = false;
 static bool alert_water_so_far = false;
 
+static bool value_available_float(float v) {
+    return !isnan(v);
+}
+
+static bool value_available_soil(int v) {
+    return v >= 0;
+}
+
+static telemetry_fields_mask_t parse_fields_mask_from_json(cJSON *root) {
+    telemetry_fields_mask_t mask = 0;
+    if (!root) return TELEMETRY_FIELDS_ALL;
+
+    // Wspieramy: {"field":"air_temperature_c"} lub {"fields":["air_temperature_c", ...]}
+    cJSON *field = cJSON_GetObjectItem(root, "field");
+    if (cJSON_IsString(field) && field->valuestring) {
+        const char *s = field->valuestring;
+        if (strcmp(s, "soil_moisture_pct") == 0) mask |= TELEMETRY_FIELD_SOIL;
+        else if (strcmp(s, "air_temperature_c") == 0) mask |= TELEMETRY_FIELD_TEMP;
+        else if (strcmp(s, "air_humidity_pct") == 0) mask |= TELEMETRY_FIELD_HUM;
+        else if (strcmp(s, "pressure_hpa") == 0) mask |= TELEMETRY_FIELD_PRESS;
+        else if (strcmp(s, "light_lux") == 0) mask |= TELEMETRY_FIELD_LIGHT;
+        else if (strcmp(s, "water_tank_ok") == 0) mask |= TELEMETRY_FIELD_WATER;
+    }
+
+    cJSON *fields = cJSON_GetObjectItem(root, "fields");
+    if (cJSON_IsArray(fields)) {
+        int n = cJSON_GetArraySize(fields);
+        for (int i = 0; i < n; i++) {
+            cJSON *it = cJSON_GetArrayItem(fields, i);
+            if (!cJSON_IsString(it) || !it->valuestring) continue;
+            const char *s = it->valuestring;
+            if (strcmp(s, "soil_moisture_pct") == 0) mask |= TELEMETRY_FIELD_SOIL;
+            else if (strcmp(s, "air_temperature_c") == 0) mask |= TELEMETRY_FIELD_TEMP;
+            else if (strcmp(s, "air_humidity_pct") == 0) mask |= TELEMETRY_FIELD_HUM;
+            else if (strcmp(s, "pressure_hpa") == 0) mask |= TELEMETRY_FIELD_PRESS;
+            else if (strcmp(s, "light_lux") == 0) mask |= TELEMETRY_FIELD_LIGHT;
+            else if (strcmp(s, "water_tank_ok") == 0) mask |= TELEMETRY_FIELD_WATER;
+        }
+    }
+
+    // Jeśli nie podano żadnych pól, traktujemy jako "wszystko"
+    if (mask == 0) return TELEMETRY_FIELDS_ALL;
+    return mask;
+}
+
 void check_thresholds(telemetry_data_t *data) {
     if (!mqtt_app_is_connected()) return;
 
     // 1. Temperatura
-    if (data->temp < thresholds.temp_min) {
+    if (value_available_float(data->temp) && data->temp < thresholds.temp_min) {
         if (!alert_temp_so_far) {
             char msg[64];
             snprintf(msg, sizeof(msg), "Temp %.1f C < min %.1f C", data->temp, thresholds.temp_min);
@@ -50,7 +97,7 @@ void check_thresholds(telemetry_data_t *data) {
     }
 
     // 2. Wilgotność
-    if (data->humidity < thresholds.hum_min) {
+    if (value_available_float(data->humidity) && data->humidity < thresholds.hum_min) {
         if (!alert_hum_so_far) {
             char msg[64];
             snprintf(msg, sizeof(msg), "Hum %.1f %% < min %.1f %%", data->humidity, thresholds.hum_min);
@@ -62,7 +109,7 @@ void check_thresholds(telemetry_data_t *data) {
     }
 
     // 3. Gleba
-    if (data->soil_moisture < thresholds.soil_min) {
+    if (value_available_soil(data->soil_moisture) && data->soil_moisture < thresholds.soil_min) {
         if (!alert_soil_so_far) {
             char msg[64];
             snprintf(msg, sizeof(msg), "Soil %d %% < min %d %%", data->soil_moisture, thresholds.soil_min);
@@ -74,7 +121,7 @@ void check_thresholds(telemetry_data_t *data) {
     }
 
     // 4. Światło
-    if (data->light_lux < thresholds.light_min) {
+    if (value_available_float(data->light_lux) && data->light_lux < thresholds.light_min) {
         if (!alert_light_so_far) {
             char msg[64];
             snprintf(msg, sizeof(msg), "Light %.1f lux < min %.1f lux", data->light_lux, thresholds.light_min);
@@ -98,45 +145,41 @@ void check_thresholds(telemetry_data_t *data) {
 
 void process_incoming_data(const char *topic, const char *payload, int len) {
     // Sprawdzenie czy to komenda czy progi
-    if (strstr(topic, "/command")) {
-        ESP_LOGI(TAG, "Odebrano komendę: %s", payload);
+    if (strstr(topic, "/command/water")) {
+        ESP_LOGI(TAG, "Odebrano komendę podlewania: %s", payload);
         cJSON *root = cJSON_Parse(payload);
         if (root) {
-            cJSON *cmd = cJSON_GetObjectItem(root, "cmd");
-            if (cJSON_IsString(cmd) && (cmd->valuestring != NULL)) {
-                
-                if (strcmp(cmd->valuestring, "water_on") == 0) {
-                    int duration = 5;
-                    cJSON *d = cJSON_GetObjectItem(root, "duration");
-                    if (cJSON_IsNumber(d)) duration = d->valueint;
-                    
-                    ESP_LOGI(TAG, "START PODLEWANIA (%d s)", duration);
-                    // Tutaj można wywołać kod obsługi pompy, np. włączyć GPIO
-                    vTaskDelay(pdMS_TO_TICKS(duration * 1000));
-                    ESP_LOGI(TAG, "STOP PODLEWANIA");
-                    mqtt_app_send_alert("info", "Watering finished");
-                    
-                    // Po podlewaniu sprawdź wodę
-                    int w_ok;
-                    sensors_get_water_status(&w_ok);
-                    telemetry_data_t t;
-                    t.water_ok = w_ok;
-                    // Prosta weryfikacja tylko wody
-                    if (t.water_ok == 1) {
-                         mqtt_app_send_alert("water_level_critical", "Refill water tank!");
-                    }
-                } 
-                else if (strcmp(cmd->valuestring, "read_data") == 0) {
-                    // Wymuszenie odczytu
-                    telemetry_data_t data;
-                    sensors_read(&data);
-                    check_thresholds(&data); // Też sprawdź progi
-                    mqtt_app_send_telemetry(&data);
-                }
+            int duration = 5;
+            cJSON *d = cJSON_GetObjectItem(root, "duration");
+            if (cJSON_IsNumber(d)) duration = d->valueint;
+
+            ESP_LOGI(TAG, "START PODLEWANIA (%d s)", duration);
+            // TODO: sterowanie pompą GPIO
+            vTaskDelay(pdMS_TO_TICKS(duration * 1000));
+            ESP_LOGI(TAG, "STOP PODLEWANIA");
+            mqtt_app_send_alert("info", "Watering finished");
+
+            // Po podlewaniu sprawdź wodę
+            int w_ok;
+            sensors_get_water_status(&w_ok);
+            if (w_ok == 1) {
+                mqtt_app_send_alert("water_level_critical", "Refill water tank!");
             }
             cJSON_Delete(root);
         }
     } 
+    else if (strstr(topic, "/command/read")) {
+        ESP_LOGI(TAG, "Odebrano komendę odczytu: %s", payload);
+        cJSON *root = cJSON_Parse(payload);
+        telemetry_fields_mask_t mask = parse_fields_mask_from_json(root);
+
+        telemetry_data_t data;
+        sensors_read(&data);
+        check_thresholds(&data);
+        mqtt_app_send_telemetry_masked(&data, mask);
+
+        if (root) cJSON_Delete(root);
+    }
     else if (strstr(topic, "/thresholds")) {
         ESP_LOGI(TAG, "Odebrano nowe progi: %s", payload);
         cJSON *root = cJSON_Parse(payload);
