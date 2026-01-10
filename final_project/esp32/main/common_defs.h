@@ -31,9 +31,13 @@ typedef struct {
 
 typedef struct {
     float temp_min;
+    float temp_max;
     float hum_min;
+    float hum_max;
     int soil_min;
+    int soil_max;
     float light_min;
+    float light_max;
 } sensor_thresholds_t;
 
 #endif // COMMON_DEFS_H
