@@ -483,10 +483,9 @@ void publisher_task(void *pvParameters) {
         // 2. Weryfikacja progów
         check_thresholds(&data);
 
-        // 3. Wysłanie danych
-        if (mqtt_app_is_connected()) {
-            mqtt_app_send_telemetry(&data);
-        }
+        // 3. Wysłanie danych (lub buforowanie jeśli offline)
+        // Usunięto sprawdzenie mqtt_app_is_connected(), aby pozwolić na buforowanie wewnątrz funkcji
+        mqtt_app_send_telemetry(&data);
 
         // Autopodlewanie logic
         struct timeval tv;
@@ -538,14 +537,14 @@ void app_main(void)
         if (!wifi_prov_is_provisioning_active()) {
             ESP_LOGW(TAG, "Brak pełnego provisioningu (SSID+broker+mqtt login/pass+user_id). Pomiary wstrzymane. Uruchom provisioning przyciskiem.");
         }
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        vTaskDelay(pdMS_TO_TICKS(10000));
     }
     
-    // Oczekiwanie na połączenie przed startem MQTT (blokujące)
-    // Dzięki temu nie startujemy MQTT bez sieci
-    ESP_LOGI(TAG, "Oczekiwanie na połączenie WiFi...");
-    wifi_prov_wait_connected();
-    ESP_LOGI(TAG, "Połączono i provisioning kompletny. Start MQTT + pomiary.");
+    // NIE BLOKUJEMY na WiFi. Startujemy MQTT i zadania od razu.
+    // Jeśli brak sieci, MQTT wejdzie w tryb reconnect, a publisher będzie buforował dane.
+    // ESP_LOGI(TAG, "Oczekiwanie na połączenie WiFi...");
+    // wifi_prov_wait_connected();
+    ESP_LOGI(TAG, "Provisioning kompletny (lub założony). Start MQTT + pomiary niezależnie od statusu WiFi.");
 
     // Inicjalizacja SNTP
     ESP_LOGI(TAG, "Inicjalizacja SNTP...");
@@ -557,7 +556,7 @@ void app_main(void)
 
     // Oczekiwanie na synchronizację czasu (max 30s)
     int retry = 0;
-    const int retry_count = 15;
+    const int retry_count = 15; // Revert to 30s (15 * 2s)
     while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++retry < retry_count) {
         ESP_LOGI(TAG, "Oczekiwanie na czas systemowy... (%d/%d)", retry, retry_count);
         vTaskDelay(pdMS_TO_TICKS(2000));
