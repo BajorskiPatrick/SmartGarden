@@ -31,6 +31,13 @@
 
 static int64_t last_water_time = 0;
 
+typedef struct {
+    int duration;
+    char source[10]; // "auto" or "manual"
+} watering_req_t;
+
+static QueueHandle_t watering_req_queue = NULL;
+
 
 // Domyślne progi - "otwarte" (brak alertów)
 // Zmiana nazwy struktury na device_settings_t
@@ -44,6 +51,7 @@ typedef struct {
     float light_min;
     float light_max;
     int watering_duration_sec; // NOWE POLA
+    int measurement_interval_sec;
 } device_settings_t; // Było sensor_thresholds_t
 
 // Domyślne ustawienia
@@ -56,7 +64,8 @@ static device_settings_t settings = {
     .soil_max = INT_MAX,
     .light_min = -INFINITY,
     .light_max = INFINITY,
-    .watering_duration_sec = 5 // Domyślnie 5 sekund
+    .watering_duration_sec = 5, // Domyślnie 5 sekund
+    .measurement_interval_sec = 60 // Domyślnie 60 sekund
 };
 
 // Flagi stanów alarmowych (zapobiega spamowaniu alertami)
@@ -257,36 +266,54 @@ void check_thresholds(telemetry_data_t *data) {
     }
 }
 
+static void watering_task(void *pvParameters) {
+    watering_req_t req;
+    while (xQueueReceive(watering_req_queue, &req, portMAX_DELAY) == pdTRUE) {
+        char details[64];
+        snprintf(details, sizeof(details), "{\"duration\":%d,\"source\":\"%s\"}", req.duration, req.source);
+        
+        // Alert notify start
+        // Uwaga: wysyłanie alertu jest thread-safe (używa kolejki wewnętrznej w mqtt_app)
+        if (strcmp(req.source, "auto") == 0) {
+            mqtt_app_send_alert2_details("auto_watering_started", "info", "system", "Auto-watering started", details);
+        } else {
+            mqtt_app_send_alert2("command.watering_started", "info", "command", "Watering started");
+        }
+
+        ESP_LOGI(TAG, "START PODLEWANIA (%s, %d s)", req.source, req.duration);
+        gpio_set_level(PUMP_GPIO, 1);
+        
+        // Delay blokujący (teraz blokujemy TYLKO ten task, nie MQTT)
+        vTaskDelay(pdMS_TO_TICKS(req.duration * 1000));
+        
+        gpio_set_level(PUMP_GPIO, 0);
+        ESP_LOGI(TAG, "STOP PODLEWANIA");
+
+        // Alert notify stop
+        if (strcmp(req.source, "auto") == 0) {
+            mqtt_app_send_alert2("auto_watering_finished", "info", "system", "Auto-watering finished");
+        } else {
+            mqtt_app_send_alert2("command.watering_finished", "info", "command", "Watering finished");
+        }
+
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        last_water_time = (int64_t)tv.tv_sec * 1000 + (tv.tv_usec / 1000);
+    }
+}
+
 static void perform_watering(int duration, const char* source) {
-    char details[64];
-    snprintf(details, sizeof(details), "{\"duration\":%d,\"source\":\"%s\"}", duration, source);
-    
-    // Alert notify start
-    if (strcmp(source, "auto") == 0) {
-        mqtt_app_send_alert2_details("auto_watering_started", "info", "system", "Auto-watering started", details);
-    } else {
-        mqtt_app_send_alert2("command.watering_started", "info", "command", "Watering started");
+    if (watering_req_queue) {
+        watering_req_t req;
+        req.duration = duration;
+        strlcpy(req.source, source, sizeof(req.source));
+        
+        if (xQueueSend(watering_req_queue, &req, 0) != pdTRUE) {
+            ESP_LOGW(TAG, "Watering queue full! Ignored request source=%s", source);
+        } else {
+            ESP_LOGI(TAG, "Watering request queued (source=%s, duration=%d)", source, duration);
+        }
     }
-
-    ESP_LOGI(TAG, "START PODLEWANIA (%s, %d s)", source, duration);
-    gpio_set_level(PUMP_GPIO, 1);
-    
-    // Delay blokujący (w tym czasie nie ma pomiarów - akceptowalne)
-    vTaskDelay(pdMS_TO_TICKS(duration * 1000));
-    
-    gpio_set_level(PUMP_GPIO, 0);
-    ESP_LOGI(TAG, "STOP PODLEWANIA");
-
-    // Alert notify stop
-    if (strcmp(source, "auto") == 0) {
-        mqtt_app_send_alert2("auto_watering_finished", "info", "system", "Auto-watering finished");
-    } else {
-        mqtt_app_send_alert2("command.watering_finished", "info", "command", "Watering finished");
-    }
-
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    last_water_time = (int64_t)tv.tv_sec * 1000 + (tv.tv_usec / 1000);
 }
 
 void process_incoming_data(const char *topic, const char *payload, int len) {
@@ -414,6 +441,12 @@ void process_incoming_data(const char *topic, const char *payload, int len) {
                 new_set.watering_duration_sec = item->valueint;
             }
 
+            // Częstotliwość pomiarów
+            item = cJSON_GetObjectItem(root, "measurement_interval_sec");
+            if (cJSON_IsNumber(item)) {
+                new_set.measurement_interval_sec = item->valueint;
+            }
+
             // Semantyka przedziału: jeśli podano tylko min => max = +inf; jeśli tylko max => min = -inf
             if (has_temp_min && !has_temp_max) new_set.temp_max = INFINITY;
             if (has_temp_max && !has_temp_min) new_set.temp_min = -INFINITY;
@@ -435,6 +468,7 @@ void process_incoming_data(const char *topic, const char *payload, int len) {
             if (new_set.light_min > new_set.light_max) valid = false;
 
             if (new_set.watering_duration_sec < 1) new_set.watering_duration_sec = 1;
+            if (new_set.measurement_interval_sec < 5) new_set.measurement_interval_sec = 5; // Min 5 sekund
 
             if (!valid) {
                 ESP_LOGW(TAG,
@@ -458,7 +492,16 @@ void process_incoming_data(const char *topic, const char *payload, int len) {
                 }
             } else {
                 settings = new_set;
-                ESP_LOGI(TAG, "Zaktualizowano ustawienia i czas podlewania: %d s", settings.watering_duration_sec);
+                ESP_LOGI(TAG, "Zaktualizowano ustawienia. Water: %ds, Interval: %ds\n"
+                         "    Temp: %.1f .. %.1f\n"
+                         "    Hum:  %.1f .. %.1f\n"
+                         "    Soil: %d .. %d\n"
+                         "    Light: %.1f .. %.1f", 
+                         settings.watering_duration_sec, settings.measurement_interval_sec,
+                         settings.temp_min, settings.temp_max,
+                         settings.hum_min, settings.hum_max,
+                         settings.soil_min, settings.soil_max,
+                         settings.light_min, settings.light_max);
                 save_settings_to_nvs();
             }
             cJSON_Delete(root);
@@ -502,7 +545,17 @@ void publisher_task(void *pvParameters) {
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(PUBLISH_INTERVAL_MS));
+        // Oblicz interwał
+        int interval_ms = settings.measurement_interval_sec * 1000;
+        
+        // Adaptacyjny interwał przy braku połączenia (oszczędzanie bufora)
+        int buffered_count = mqtt_app_get_consecutive_buffered_count();
+        if (buffered_count >= 5) {
+             interval_ms = 7200 * 1000; // 2 godziny
+             ESP_LOGW(TAG, "Offline mode: 5 consecutive failures. Switching to 2h interval. (Buffered: %d)", buffered_count);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(interval_ms));
     }
 }
 
@@ -572,6 +625,10 @@ void app_main(void)
 
     // Start MQTT
     mqtt_app_start(process_incoming_data);
+
+    // Kolejka i task podlewania
+    watering_req_queue = xQueueCreate(5, sizeof(watering_req_t));
+    xTaskCreate(watering_task, "watering_task", 4096, NULL, 5, NULL);
 
     // Start zadania głównego (pomiary)
     xTaskCreate(publisher_task, "publisher_task", 4096, NULL, 5, NULL);

@@ -61,11 +61,25 @@ public class DeviceController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to,
             @PageableDefault(size = 20, sort = "timestamp", direction = org.springframework.data.domain.Sort.Direction.DESC) Pageable pageable) {
 
+        // IMPLEMENTACJA CONSUMPCJI ALERTÓW
+        // 1. Pobierz TYLKO nieprzeczytane (IsReadFalse)
+        Page<Alert> alerts;
         String normalizedMac = normalizeMac(mac);
         if (from != null && to != null) {
-            return alertRepository.findByDevice_MacAddressAndTimestampBetween(normalizedMac, from, to, pageable);
+            alerts = alertRepository.findByDevice_MacAddressAndTimestampBetweenAndIsReadFalse(normalizedMac, from, to,
+                    pageable);
+        } else {
+            alerts = alertRepository.findByDevice_MacAddressAndIsReadFalse(normalizedMac, pageable);
         }
-        return alertRepository.findByDevice_MacAddress(normalizedMac, pageable);
+
+        // 2. Oznacz pobrane jako przeczytane
+        // (Tylko te, które są na bieżącej stronie wyników)
+        if (alerts.hasContent()) {
+            alerts.getContent().forEach(alert -> alert.setIsRead(true));
+            alertRepository.saveAll(alerts.getContent());
+        }
+
+        return alerts;
     }
 
     private String normalizeMac(String mac) {

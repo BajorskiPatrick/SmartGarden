@@ -200,7 +200,8 @@ public class SmartGardenService {
                     // Create defaults if not exists
                     DeviceSettings defaults = new DeviceSettings();
                     defaults.setDevice(settingsDevice);
-                    defaults.setWateringDurationSeconds(5); // Default 5s in backend too
+                    defaults.setWateringDurationSeconds(5); // Default 5s
+                    defaults.setMeasurementIntervalSeconds(60); // Default 60s
                     deviceSettingsRepository.save(defaults);
                     return mapToDto(defaults);
                 });
@@ -231,11 +232,13 @@ public class SmartGardenService {
             settings.setLightMax(dto.getLightMax());
         if (dto.getWateringDurationSeconds() != null)
             settings.setWateringDurationSeconds(dto.getWateringDurationSeconds());
+        if (dto.getMeasurementIntervalSeconds() != null)
+            settings.setMeasurementIntervalSeconds(dto.getMeasurementIntervalSeconds());
 
         deviceSettingsRepository.save(settings);
 
         // Publish to MQTT
-        // Topic: garden/{user}/{device}/settings (CHANGED from thresholds)
+        // Topic: garden/{user}/{device}/settings
         // Payload: {"temp_min": 10.0, "watering_duration_sec": 5, ...}
         String topic = String.format("garden/%s/%s/settings", device.getUserId(), mac);
         String payload = buildThresholdsJson(settings);
@@ -253,7 +256,9 @@ public class SmartGardenService {
         dto.setSoilMax(s.getSoilMax());
         dto.setLightMin(s.getLightMin());
         dto.setLightMax(s.getLightMax());
-        dto.setWateringDurationSeconds(s.getWateringDurationSeconds());
+        dto.setWateringDurationSeconds(s.getWateringDurationSeconds() != null ? s.getWateringDurationSeconds() : 5);
+        dto.setMeasurementIntervalSeconds(
+                s.getMeasurementIntervalSeconds() != null ? s.getMeasurementIntervalSeconds() : 60);
         return dto;
     }
 

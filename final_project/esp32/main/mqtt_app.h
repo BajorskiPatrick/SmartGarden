@@ -14,7 +14,11 @@ void mqtt_app_start(mqtt_data_callback_t cb);
 void mqtt_app_send_telemetry(telemetry_data_t *data);
 
 // Wysyłanie telemetrii z maską pól (pozostałe pola będą ustawione na null)
+// Wysyłanie telemetrii z maską pól (pozostałe pola będą ustawione na null)
 void mqtt_app_send_telemetry_masked(telemetry_data_t *data, telemetry_fields_mask_t fields_mask);
+
+// Zwraca ilosc zbuforowanych pakietow z rzedu
+int mqtt_app_get_consecutive_buffered_count(void);
 
 // Wysyłanie alertu (QoS 2)
 void mqtt_app_send_alert(const char* type, const char* message);

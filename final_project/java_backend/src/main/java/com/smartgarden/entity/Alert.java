@@ -36,4 +36,7 @@ public class Alert {
 
     @Column(columnDefinition = "TEXT")
     private String details;
+
+    @Column(nullable = false, columnDefinition = "boolean default false")
+    private Boolean isRead = false;
 }

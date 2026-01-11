@@ -36,4 +36,8 @@ public class DeviceSettingsDto {
     @JsonProperty("watering_duration_sec")
     @JsonAlias("wateringDurationSeconds")
     private Integer wateringDurationSeconds;
+
+    @JsonProperty("measurement_interval_sec")
+    @JsonAlias("measurementIntervalSeconds")
+    private Integer measurementIntervalSeconds;
 }
