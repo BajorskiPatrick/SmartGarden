@@ -21,15 +21,16 @@ public class DeviceSettings {
     private Device device;
 
     // Defaults based on ESP32 code
-    private Float tempMin = 5.0f;
-    private Float tempMax = 100.0f; // effectively infinity in context
+    // Defaults based on ESP32 code
+    private Float tempMin;
+    private Float tempMax;
 
-    private Float humMin = 20.0f;
-    private Float humMax = 100.0f;
+    private Float humMin;
+    private Float humMax;
 
-    private Integer soilMin = 10;
-    private Integer soilMax = 100;
+    private Integer soilMin;
+    private Integer soilMax;
 
-    private Float lightMin = 100.0f;
-    private Float lightMax = 20000.0f; // arbitrary high value
+    private Float lightMin;
+    private Float lightMax;
 }

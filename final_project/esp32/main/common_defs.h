@@ -25,8 +25,8 @@ typedef struct {
     float humidity;
     float pressure;
     float light_lux;
-    int water_ok; // 0 = OK, 1 = ALARM
-    uint32_t timestamp;
+    int16_t water_ok; // 0 = OK, 1 = ALARM
+    int64_t timestamp;
 } telemetry_data_t;
 
 typedef struct {

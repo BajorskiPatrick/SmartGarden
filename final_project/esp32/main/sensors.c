@@ -10,6 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_rom_sys.h" // Dla esp_rom_delay_us
+#include <sys/time.h>    // Dla gettimeofday
 
 #include "mqtt_app.h"
 #include "alert_limiter.h"
@@ -305,10 +306,14 @@ void sensors_read(telemetry_data_t *data) {
     }
 
     // 4. Woda
-    sensors_get_water_status(&data->water_ok);
+    int w_val = 0;
+    sensors_get_water_status(&w_val);
+    data->water_ok = (int16_t)w_val;
     
     // 5. Timestamp
-    data->timestamp = esp_log_timestamp();
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    data->timestamp = (int64_t)tv.tv_sec * 1000 + (tv.tv_usec / 1000);
     
     ESP_LOGI(TAG, "Odczyt: T:%.1f H:%.1f P:%.0f L:%.1f S:%d W:%d", 
              data->temp, data->humidity, data->pressure, data->light_lux, 

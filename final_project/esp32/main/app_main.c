@@ -18,22 +18,24 @@
 #include "common_defs.h"
 #include "sensors.h"
 #include "mqtt_app.h"
+#include "mqtt_app.h"
 #include "wifi_prov.h" // DODANE
+#include "esp_sntp.h"
 
 #include "alert_limiter.h"
 
 #define TAG "MAIN_APP"
 #define PUBLISH_INTERVAL_MS 10000
 
-// Domyślne progi
+// Domyślne progi - "otwarte" (brak alertów)
 static sensor_thresholds_t thresholds = {
-    .temp_min = 5.0f,
+    .temp_min = -INFINITY,
     .temp_max = INFINITY,
-    .hum_min = 20.0f,
+    .hum_min = -INFINITY,
     .hum_max = INFINITY,
-    .soil_min = 10,
+    .soil_min = INT_MIN,
     .soil_max = INT_MAX,
-    .light_min = 100.0f,
+    .light_min = -INFINITY,
     .light_max = INFINITY
 };
 
@@ -54,6 +56,42 @@ static bool value_available_float(float v) {
 
 static bool value_available_soil(int v) {
     return v >= 0;
+}
+
+static void save_thresholds_to_nvs(void) {
+    nvs_handle_t my_handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &my_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error (%s) opening NVS handle!", esp_err_to_name(err));
+    } else {
+        err = nvs_set_blob(my_handle, "thresholds", &thresholds, sizeof(thresholds));
+        if (err != ESP_OK) {
+             ESP_LOGE(TAG, "Failed to save thresholds to NVS!");
+        } else {
+             err = nvs_commit(my_handle);
+             if (err == ESP_OK) {
+                 ESP_LOGI(TAG, "Thresholds saved to NVS");
+             }
+        }
+        nvs_close(my_handle);
+    }
+}
+
+static void load_thresholds_from_nvs(void) {
+    nvs_handle_t my_handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &my_handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Error (%s) opening NVS handle! Using defaults.", esp_err_to_name(err));
+    } else {
+        size_t required_size = sizeof(thresholds);
+        err = nvs_get_blob(my_handle, "thresholds", &thresholds, &required_size);
+        if (err != ESP_OK) {
+             ESP_LOGW(TAG, "No thresholds found in NVS. Using defaults.");
+        } else {
+             ESP_LOGI(TAG, "Thresholds loaded from NVS");
+        }
+        nvs_close(my_handle);
+    }
 }
 
 static telemetry_fields_mask_t parse_fields_mask_from_json(cJSON *root) {
@@ -370,6 +408,7 @@ void process_incoming_data(const char *topic, const char *payload, int len) {
             }
 
             thresholds = new_thr;
+            save_thresholds_to_nvs(); // Save to NVS persistence
 
             ESP_LOGI(TAG,
                      "Zaktualizowano progi: T[%.2f..%.2f], H[%.2f..%.2f], S[%d..%d], L[%.2f..%.2f]",
@@ -419,6 +458,9 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    
+    // Wczytaj progi z NVS (jeśli istnieją)
+    load_thresholds_from_nvs();
 
     // Inicjalizacja sensorów (Wcześniej niż WiFi/BLE, żeby uniknąć zakłóceń przy starcie I2C)
     if (sensors_init() != ESP_OK) {
@@ -442,6 +484,30 @@ void app_main(void)
     ESP_LOGI(TAG, "Oczekiwanie na połączenie WiFi...");
     wifi_prov_wait_connected();
     ESP_LOGI(TAG, "Połączono i provisioning kompletny. Start MQTT + pomiary.");
+
+    // Inicjalizacja SNTP
+    ESP_LOGI(TAG, "Inicjalizacja SNTP...");
+    setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+    tzset();
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
+
+    // Oczekiwanie na synchronizację czasu (max 30s)
+    int retry = 0;
+    const int retry_count = 15;
+    while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++retry < retry_count) {
+        ESP_LOGI(TAG, "Oczekiwanie na czas systemowy... (%d/%d)", retry, retry_count);
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+    
+    time_t now;
+    struct tm timeinfo;
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    char strftime_buf[64];
+    strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
+    ESP_LOGI(TAG, "Aktualny czas: %s", strftime_buf);
 
     // Start MQTT
     mqtt_app_start(process_incoming_data);

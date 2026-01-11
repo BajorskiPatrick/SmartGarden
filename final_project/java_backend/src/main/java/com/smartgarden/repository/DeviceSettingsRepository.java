@@ -9,4 +9,6 @@ import java.util.Optional;
 @Repository
 public interface DeviceSettingsRepository extends JpaRepository<DeviceSettings, Long> {
     Optional<DeviceSettings> findByDevice_MacAddress(String macAddress);
+
+    void deleteByDevice_MacAddress(String macAddress);
 }
