@@ -55,6 +55,11 @@ static size_t s_preinit_alerts_count = 0;
 static bool s_telemetry_buffering = false;
 static uint32_t s_telemetry_dropped = 0;
 static uint32_t s_alert_dropped = 0;
+static int s_consecutive_buffered_count = 0;
+
+int mqtt_app_get_consecutive_buffered_count(void) {
+    return s_consecutive_buffered_count;
+}
 
 static int64_t get_time_ms(void) {
     struct timeval tv;
@@ -181,6 +186,7 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT Połączono");
         is_connected = true;
+        s_consecutive_buffered_count = 0; // Reset adaptive interval counter
 
         {
             uint32_t suppressed = 0;
@@ -436,7 +442,8 @@ void mqtt_app_send_telemetry_masked(telemetry_data_t *data, telemetry_fields_mas
 
         if (telemetry_queue) {
             if (xQueueSend(telemetry_queue, data, 0) == pdTRUE) {
-                ESP_LOGW(TAG, "Offline. Zbuforowano dane (ts: %lu)", data->timestamp);
+                s_consecutive_buffered_count++; // Increment count
+                ESP_LOGW(TAG, "Offline. Zbuforowano dane (ts: %lu) [Count: %d]", data->timestamp, s_consecutive_buffered_count);
             } else {
                 ESP_LOGE(TAG, "Offline. Bufor pełny!");
                 s_telemetry_dropped++;
@@ -491,6 +498,7 @@ void mqtt_app_send_telemetry_masked(telemetry_data_t *data, telemetry_fields_mas
 
     char *json_str = cJSON_PrintUnformatted(root);
     esp_mqtt_client_publish(client, topic, json_str, 0, 1, 0);
+    s_consecutive_buffered_count = 0; // Reset count
 
     cJSON_Delete(root);
     free(json_str);

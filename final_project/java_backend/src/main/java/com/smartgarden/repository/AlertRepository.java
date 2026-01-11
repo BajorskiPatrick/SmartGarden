@@ -12,7 +12,13 @@ import java.time.LocalDateTime;
 public interface AlertRepository extends JpaRepository<Alert, Long> {
     Page<Alert> findByDevice_MacAddress(String macAddress, Pageable pageable);
 
+    // Tylko nieprzeczytane
+    Page<Alert> findByDevice_MacAddressAndIsReadFalse(String macAddress, Pageable pageable);
+
     Page<Alert> findByDevice_MacAddressAndTimestampBetween(
+            String macAddress, LocalDateTime start, LocalDateTime end, Pageable pageable);
+
+    Page<Alert> findByDevice_MacAddressAndTimestampBetweenAndIsReadFalse(
             String macAddress, LocalDateTime start, LocalDateTime end, Pageable pageable);
 
     void deleteByDevice_MacAddress(String macAddress);

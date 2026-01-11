@@ -128,6 +128,13 @@ static void request_advertising_start(const char *reason);
 // 1. HELPERS (Timer, NVS)
 // --------------------------------------------------------------------------
 
+static esp_timer_handle_t s_reconnect_timer = NULL;
+
+static void reconnect_timer_cb(void *arg) {
+    ESP_LOGI(LOG_TAG, "Reconnect timer expired. Triggering connection attempt...");
+    esp_wifi_connect();
+}
+
 static void restart_timer_cb(void *arg) {
     ESP_LOGI(LOG_TAG, "Restart timer expired. Rebooting system now.");
     esp_restart();
@@ -313,7 +320,15 @@ static esp_err_t clear_wifi_credentials() {
         err = nvs_commit(my_handle);
         nvs_close(my_handle);
         wifi_credentials_present = false;
-        ESP_LOGI(LOG_TAG, "NVS cleared.");
+        
+        // Clear Application Settings (Storage Namespace)
+        if (nvs_open("storage", NVS_READWRITE, &my_handle) == ESP_OK) {
+            nvs_erase_all(my_handle);
+            nvs_commit(my_handle);
+            nvs_close(my_handle);
+            ESP_LOGI(LOG_TAG, "NVS Storage cleared.");
+        }
+        ESP_LOGI(LOG_TAG, "NVS Wifi Config cleared.");
     }
     return err;
 }
@@ -354,10 +369,17 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
             }
             char details[128];
             snprintf(details, sizeof(details), "{\"reason\":%d,\"suppressed\":%lu}", reason, (unsigned long)suppressed);
-            mqtt_app_send_alert2_details("wifi.disconnected", "warning", "wifi", "WiFi disconnected. Retrying...", details);
+            mqtt_app_send_alert2_details("wifi.disconnected", "warning", "wifi", "WiFi disconnected. Retrying in 30s...", details);
         }
 
-        esp_wifi_connect();
+        // Zamiast natychmiastowego reconnectu, czekamy 30s
+        if (s_reconnect_timer) {
+            esp_timer_stop(s_reconnect_timer); // Reset jeśli już leci
+            esp_timer_start_once(s_reconnect_timer, 30000000); // 30 sekund
+        } else {
+            // Fallback (powinno być zainicjalizowane)
+            esp_wifi_connect(); 
+        }
     } 
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
@@ -857,6 +879,13 @@ void wifi_prov_init(void) {
     
     // Start button task
     xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL);
+
+    // Timer do reconnectu WiFi (30s)
+    esp_timer_create_args_t recon_args = {
+        .callback = &reconnect_timer_cb,
+        .name = "wifi_reconnect"
+    };
+    esp_timer_create(&recon_args, &s_reconnect_timer);
 
     // Task, który odpala provisioning/BLE (żeby nie przepełniać stosu w button_task)
     xTaskCreate(prov_ctrl_task, "prov_ctrl_task", 4096, NULL, 9, &s_prov_ctrl_task_handle);
