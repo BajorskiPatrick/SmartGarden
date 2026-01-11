@@ -76,13 +76,16 @@ public class ProvisioningService {
                 .orElse(new Device());
 
         // Implement "Resell" Logic: If device exists, clear its data
+        // Implement "Resell" Logic: If device exists AND user changes, clear its data
         if (device.getMacAddress() != null) {
-            log.info("Provisioning existing device {}. Clearing old data for resale procedure.", macAddress);
-            measurementRepository.deleteByDevice_MacAddress(macAddress);
-            alertRepository.deleteByDevice_MacAddress(macAddress);
-            deviceSettingsRepository.deleteByDevice_MacAddress(macAddress);
-            // Optionally we could check: if (device.getUserId() != null &&
-            // !device.getUserId().equals(username)) { ... }
+            if (!username.equals(device.getUserId())) {
+                log.info("Ownership change for device {}. Clearing old data from previous user.", macAddress);
+                measurementRepository.deleteByDevice_MacAddress(macAddress);
+                alertRepository.deleteByDevice_MacAddress(macAddress);
+                deviceSettingsRepository.deleteByDevice_MacAddress(macAddress);
+            } else {
+                log.info("Re-provisioning device {} for same user {}. Preserving data.", macAddress, username);
+            }
         }
 
         device.setMacAddress(macAddress);
