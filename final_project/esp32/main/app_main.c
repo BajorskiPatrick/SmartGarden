@@ -516,6 +516,9 @@ void process_incoming_data(const char *topic, const char *payload, int len) {
     }
 }
 
+// Handle do taska głównego (do wybudzania po reconnected)
+TaskHandle_t publisher_task_handle = NULL;
+
 void publisher_task(void *pvParameters) {
     while (1) {
         telemetry_data_t data;
@@ -555,7 +558,9 @@ void publisher_task(void *pvParameters) {
              ESP_LOGW(TAG, "Offline mode: 5 consecutive failures. Switching to 2h interval. (Buffered: %d)", buffered_count);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(interval_ms));
+        // Zamiast vTaskDelay, czekamy na notyfikację (np. od MQTT_CONNECTED) LUB timeout
+        // Dzięki temu po odzyskaniu połączenia task wybudzi się natychmiast i wróci do normalnego cyklu.
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(interval_ms));
     }
 }
 
@@ -631,5 +636,5 @@ void app_main(void)
     xTaskCreate(watering_task, "watering_task", 4096, NULL, 5, NULL);
 
     // Start zadania głównego (pomiary)
-    xTaskCreate(publisher_task, "publisher_task", 4096, NULL, 5, NULL);
+    xTaskCreate(publisher_task, "publisher_task", 4096, NULL, 5, &publisher_task_handle);
 }

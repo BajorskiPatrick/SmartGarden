@@ -187,6 +187,12 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
         ESP_LOGI(TAG, "MQTT Połączono");
         is_connected = true;
         s_consecutive_buffered_count = 0; // Reset adaptive interval counter
+        
+        // Wybudź publisher_task (żeby przerwał długie spanie 2h i wysłał dane natychmiast)
+        extern TaskHandle_t publisher_task_handle;
+        if (publisher_task_handle != NULL) {
+            xTaskNotifyGive(publisher_task_handle);
+        }
 
         {
             uint32_t suppressed = 0;
