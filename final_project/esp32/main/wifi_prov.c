@@ -320,14 +320,6 @@ static esp_err_t clear_wifi_credentials() {
         err = nvs_commit(my_handle);
         nvs_close(my_handle);
         wifi_credentials_present = false;
-        
-        // Clear Application Settings (Storage Namespace)
-        if (nvs_open("storage", NVS_READWRITE, &my_handle) == ESP_OK) {
-            nvs_erase_all(my_handle);
-            nvs_commit(my_handle);
-            nvs_close(my_handle);
-            ESP_LOGI(LOG_TAG, "NVS Storage cleared.");
-        }
         ESP_LOGI(LOG_TAG, "NVS Wifi Config cleared.");
     }
     return err;

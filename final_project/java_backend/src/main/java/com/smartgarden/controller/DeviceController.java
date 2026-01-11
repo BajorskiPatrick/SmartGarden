@@ -101,7 +101,12 @@ public class DeviceController {
     }
 
     @PostMapping("/{mac}/settings")
-    public void updateSettings(@PathVariable String mac, @RequestBody com.smartgarden.dto.DeviceSettingsDto dto) {
-        smartGardenService.updateDeviceSettings(normalizeMac(mac), dto);
+    public void updateSettings(@PathVariable String mac, @RequestBody com.smartgarden.dto.DeviceSettingsDto settings) {
+        smartGardenService.updateDeviceSettings(normalizeMac(mac), settings);
+    }
+
+    @PostMapping("/{mac}/settings/reset")
+    public void resetSettings(@PathVariable String mac) {
+        smartGardenService.resetDeviceSettings(normalizeMac(mac));
     }
 }
