@@ -77,8 +77,8 @@ public class DeviceController {
     private final com.smartgarden.service.SmartGardenService smartGardenService;
 
     @PostMapping("/{mac}/water")
-    public void waterPlant(@PathVariable String mac) {
-        smartGardenService.sendWaterCommand(normalizeMac(mac));
+    public void waterPlant(@PathVariable String mac, @RequestParam(required = false) Integer duration) {
+        smartGardenService.sendWaterCommand(normalizeMac(mac), duration);
     }
 
     @GetMapping("/{mac}/settings")

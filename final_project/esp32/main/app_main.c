@@ -33,7 +33,21 @@ static int64_t last_water_time = 0;
 
 
 // Domyślne progi - "otwarte" (brak alertów)
-static sensor_thresholds_t thresholds = {
+// Zmiana nazwy struktury na device_settings_t
+typedef struct {
+    float temp_min;
+    float temp_max;
+    float hum_min;
+    float hum_max;
+    int soil_min;
+    int soil_max;
+    float light_min;
+    float light_max;
+    int watering_duration_sec; // NOWE POLA
+} device_settings_t; // Było sensor_thresholds_t
+
+// Domyślne ustawienia
+static device_settings_t settings = {
     .temp_min = -INFINITY,
     .temp_max = INFINITY,
     .hum_min = -INFINITY,
@@ -41,7 +55,8 @@ static sensor_thresholds_t thresholds = {
     .soil_min = INT_MIN,
     .soil_max = INT_MAX,
     .light_min = -INFINITY,
-    .light_max = INFINITY
+    .light_max = INFINITY,
+    .watering_duration_sec = 5 // Domyślnie 5 sekund
 };
 
 // Flagi stanów alarmowych (zapobiega spamowaniu alertami)
@@ -63,37 +78,37 @@ static bool value_available_soil(int v) {
     return v >= 0;
 }
 
-static void save_thresholds_to_nvs(void) {
+static void save_settings_to_nvs(void) {
     nvs_handle_t my_handle;
     esp_err_t err = nvs_open("storage", NVS_READWRITE, &my_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Error (%s) opening NVS handle!", esp_err_to_name(err));
     } else {
-        err = nvs_set_blob(my_handle, "thresholds", &thresholds, sizeof(thresholds));
+        err = nvs_set_blob(my_handle, "settings", &settings, sizeof(settings));
         if (err != ESP_OK) {
-             ESP_LOGE(TAG, "Failed to save thresholds to NVS!");
+             ESP_LOGE(TAG, "Failed to save settings to NVS!");
         } else {
              err = nvs_commit(my_handle);
              if (err == ESP_OK) {
-                 ESP_LOGI(TAG, "Thresholds saved to NVS");
+                 ESP_LOGI(TAG, "Settings saved to NVS");
              }
         }
         nvs_close(my_handle);
     }
 }
 
-static void load_thresholds_from_nvs(void) {
+static void load_settings_from_nvs(void) {
     nvs_handle_t my_handle;
     esp_err_t err = nvs_open("storage", NVS_READWRITE, &my_handle);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Error (%s) opening NVS handle! Using defaults.", esp_err_to_name(err));
     } else {
-        size_t required_size = sizeof(thresholds);
-        err = nvs_get_blob(my_handle, "thresholds", &thresholds, &required_size);
+        size_t required_size = sizeof(settings);
+        err = nvs_get_blob(my_handle, "settings", &settings, &required_size);
         if (err != ESP_OK) {
-             ESP_LOGW(TAG, "No thresholds found in NVS. Using defaults.");
+             ESP_LOGW(TAG, "No settings found in NVS. Using defaults.");
         } else {
-             ESP_LOGI(TAG, "Thresholds loaded from NVS");
+             ESP_LOGI(TAG, "Settings loaded from NVS");
         }
         nvs_close(my_handle);
     }
@@ -140,10 +155,10 @@ void check_thresholds(telemetry_data_t *data) {
     if (!mqtt_app_is_connected()) return;
 
     // 1. Temperatura
-    if (value_available_float(data->temp) && data->temp < thresholds.temp_min) {
+    if (value_available_float(data->temp) && data->temp < settings.temp_min) {
         if (!alert_temp_so_far) {
             char msg[64];
-            snprintf(msg, sizeof(msg), "Temp %.1f C < min %.1f C", data->temp, thresholds.temp_min);
+            snprintf(msg, sizeof(msg), "Temp %.1f C < min %.1f C", data->temp, settings.temp_min);
             mqtt_app_send_alert("temperature_low", msg);
             alert_temp_so_far = true;
         }
@@ -151,10 +166,10 @@ void check_thresholds(telemetry_data_t *data) {
         alert_temp_so_far = false;
     }
 
-    if (value_available_float(data->temp) && data->temp > thresholds.temp_max) {
+    if (value_available_float(data->temp) && data->temp > settings.temp_max) {
         if (!alert_temp_high_so_far) {
             char msg[64];
-            snprintf(msg, sizeof(msg), "Temp %.1f C > max %.1f C", data->temp, thresholds.temp_max);
+            snprintf(msg, sizeof(msg), "Temp %.1f C > max %.1f C", data->temp, settings.temp_max);
             mqtt_app_send_alert("temperature_high", msg);
             alert_temp_high_so_far = true;
         }
@@ -163,10 +178,10 @@ void check_thresholds(telemetry_data_t *data) {
     }
 
     // 2. Wilgotność
-    if (value_available_float(data->humidity) && data->humidity < thresholds.hum_min) {
+    if (value_available_float(data->humidity) && data->humidity < settings.hum_min) {
         if (!alert_hum_so_far) {
             char msg[64];
-            snprintf(msg, sizeof(msg), "Hum %.1f %% < min %.1f %%", data->humidity, thresholds.hum_min);
+            snprintf(msg, sizeof(msg), "Hum %.1f %% < min %.1f %%", data->humidity, settings.hum_min);
             mqtt_app_send_alert("humidity_low", msg);
             alert_hum_so_far = true;
         }
@@ -174,10 +189,10 @@ void check_thresholds(telemetry_data_t *data) {
         alert_hum_so_far = false;
     }
 
-    if (value_available_float(data->humidity) && data->humidity > thresholds.hum_max) {
+    if (value_available_float(data->humidity) && data->humidity > settings.hum_max) {
         if (!alert_hum_high_so_far) {
             char msg[64];
-            snprintf(msg, sizeof(msg), "Hum %.1f %% > max %.1f %%", data->humidity, thresholds.hum_max);
+            snprintf(msg, sizeof(msg), "Hum %.1f %% > max %.1f %%", data->humidity, settings.hum_max);
             mqtt_app_send_alert("humidity_high", msg);
             alert_hum_high_so_far = true;
         }
@@ -186,10 +201,10 @@ void check_thresholds(telemetry_data_t *data) {
     }
 
     // 3. Gleba
-    if (value_available_soil(data->soil_moisture) && data->soil_moisture < thresholds.soil_min) {
+    if (value_available_soil(data->soil_moisture) && data->soil_moisture < settings.soil_min) {
         if (!alert_soil_so_far) {
             char msg[64];
-            snprintf(msg, sizeof(msg), "Soil %d %% < min %d %%", data->soil_moisture, thresholds.soil_min);
+            snprintf(msg, sizeof(msg), "Soil %d %% < min %d %%", data->soil_moisture, settings.soil_min);
             mqtt_app_send_alert("soil_moisture_low", msg);
             alert_soil_so_far = true;
         }
@@ -197,10 +212,10 @@ void check_thresholds(telemetry_data_t *data) {
         alert_soil_so_far = false;
     }
 
-    if (value_available_soil(data->soil_moisture) && data->soil_moisture > thresholds.soil_max) {
+    if (value_available_soil(data->soil_moisture) && data->soil_moisture > settings.soil_max) {
         if (!alert_soil_high_so_far) {
             char msg[64];
-            snprintf(msg, sizeof(msg), "Soil %d %% > max %d %%", data->soil_moisture, thresholds.soil_max);
+            snprintf(msg, sizeof(msg), "Soil %d %% > max %d %%", data->soil_moisture, settings.soil_max);
             mqtt_app_send_alert("soil_moisture_high", msg);
             alert_soil_high_so_far = true;
         }
@@ -209,10 +224,10 @@ void check_thresholds(telemetry_data_t *data) {
     }
 
     // 4. Światło
-    if (value_available_float(data->light_lux) && data->light_lux < thresholds.light_min) {
+    if (value_available_float(data->light_lux) && data->light_lux < settings.light_min) {
         if (!alert_light_so_far) {
             char msg[64];
-            snprintf(msg, sizeof(msg), "Light %.1f lux < min %.1f lux", data->light_lux, thresholds.light_min);
+            snprintf(msg, sizeof(msg), "Light %.1f lux < min %.1f lux", data->light_lux, settings.light_min);
             mqtt_app_send_alert("light_low", msg);
             alert_light_so_far = true;
         }
@@ -220,10 +235,10 @@ void check_thresholds(telemetry_data_t *data) {
         alert_light_so_far = false;
     }
 
-    if (value_available_float(data->light_lux) && data->light_lux > thresholds.light_max) {
+    if (value_available_float(data->light_lux) && data->light_lux > settings.light_max) {
         if (!alert_light_high_so_far) {
             char msg[64];
-            snprintf(msg, sizeof(msg), "Light %.1f lux > max %.1f lux", data->light_lux, thresholds.light_max);
+            snprintf(msg, sizeof(msg), "Light %.1f lux > max %.1f lux", data->light_lux, settings.light_max);
             mqtt_app_send_alert("light_high", msg);
             alert_light_high_so_far = true;
         }
@@ -280,7 +295,7 @@ void process_incoming_data(const char *topic, const char *payload, int len) {
         ESP_LOGI(TAG, "Odebrano komendę podlewania: %s", payload);
         cJSON *root = cJSON_Parse(payload);
         if (root) {
-            int duration = 5;
+            int duration = settings.watering_duration_sec; // Domyślnie z ustawień
             cJSON *d = cJSON_GetObjectItem(root, "duration");
             if (cJSON_IsNumber(d)) duration = d->valueint;
 
@@ -336,11 +351,11 @@ void process_incoming_data(const char *topic, const char *payload, int len) {
 
         if (root) cJSON_Delete(root);
     }
-    else if (strstr(topic, "/thresholds")) {
-        ESP_LOGI(TAG, "Odebrano nowe progi: %s", payload);
+    else if (strstr(topic, "/settings")) {
+        ESP_LOGI(TAG, "Odebrano nowe ustawienia: %s", payload);
         cJSON *root = cJSON_Parse(payload);
         if (root) {
-            sensor_thresholds_t new_thr = thresholds;
+            device_settings_t new_set = settings;
 
             bool has_temp_min = false, has_temp_max = false;
             bool has_hum_min = false, has_hum_max = false;
@@ -351,114 +366,108 @@ void process_incoming_data(const char *topic, const char *payload, int len) {
 
             item = cJSON_GetObjectItem(root, "temp_min");
             if (cJSON_IsNumber(item)) {
-                new_thr.temp_min = (float)item->valuedouble;
+                new_set.temp_min = (float)item->valuedouble;
                 has_temp_min = true;
             }
             item = cJSON_GetObjectItem(root, "temp_max");
             if (cJSON_IsNumber(item)) {
-                new_thr.temp_max = (float)item->valuedouble;
+                new_set.temp_max = (float)item->valuedouble;
                 has_temp_max = true;
             }
 
             item = cJSON_GetObjectItem(root, "hum_min");
             if (cJSON_IsNumber(item)) {
-                new_thr.hum_min = (float)item->valuedouble;
+                new_set.hum_min = (float)item->valuedouble;
                 has_hum_min = true;
             }
             item = cJSON_GetObjectItem(root, "hum_max");
             if (cJSON_IsNumber(item)) {
-                new_thr.hum_max = (float)item->valuedouble;
+                new_set.hum_max = (float)item->valuedouble;
                 has_hum_max = true;
             }
 
             item = cJSON_GetObjectItem(root, "soil_min");
             if (cJSON_IsNumber(item)) {
-                new_thr.soil_min = item->valueint;
+                new_set.soil_min = item->valueint;
                 has_soil_min = true;
             }
             item = cJSON_GetObjectItem(root, "soil_max");
             if (cJSON_IsNumber(item)) {
-                new_thr.soil_max = item->valueint;
+                new_set.soil_max = item->valueint;
                 has_soil_max = true;
             }
 
             item = cJSON_GetObjectItem(root, "light_min");
             if (cJSON_IsNumber(item)) {
-                new_thr.light_min = (float)item->valuedouble;
+                new_set.light_min = (float)item->valuedouble;
                 has_light_min = true;
             }
             item = cJSON_GetObjectItem(root, "light_max");
             if (cJSON_IsNumber(item)) {
-                new_thr.light_max = (float)item->valuedouble;
+                new_set.light_max = (float)item->valuedouble;
                 has_light_max = true;
             }
 
+            // Czas podlewania
+            item = cJSON_GetObjectItem(root, "watering_duration_sec");
+            if (cJSON_IsNumber(item)) {
+                new_set.watering_duration_sec = item->valueint;
+            }
+
             // Semantyka przedziału: jeśli podano tylko min => max = +inf; jeśli tylko max => min = -inf
-            if (has_temp_min && !has_temp_max) new_thr.temp_max = INFINITY;
-            if (has_temp_max && !has_temp_min) new_thr.temp_min = -INFINITY;
+            if (has_temp_min && !has_temp_max) new_set.temp_max = INFINITY;
+            if (has_temp_max && !has_temp_min) new_set.temp_min = -INFINITY;
 
-            if (has_hum_min && !has_hum_max) new_thr.hum_max = INFINITY;
-            if (has_hum_max && !has_hum_min) new_thr.hum_min = -INFINITY;
+            if (has_hum_min && !has_hum_max) new_set.hum_max = INFINITY;
+            if (has_hum_max && !has_hum_min) new_set.hum_min = -INFINITY;
 
-            if (has_soil_min && !has_soil_max) new_thr.soil_max = INT_MAX;
-            if (has_soil_max && !has_soil_min) new_thr.soil_min = INT_MIN;
+            if (has_soil_min && !has_soil_max) new_set.soil_max = INT_MAX;
+            if (has_soil_max && !has_soil_min) new_set.soil_min = INT_MIN;
 
-            if (has_light_min && !has_light_max) new_thr.light_max = INFINITY;
-            if (has_light_max && !has_light_min) new_thr.light_min = -INFINITY;
+            if (has_light_min && !has_light_max) new_set.light_max = INFINITY;
+            if (has_light_max && !has_light_min) new_set.light_min = -INFINITY;
 
             // Walidacja: min <= max. Jeśli nie, odrzucamy cały update i zostawiamy poprzednie progi.
             bool valid = true;
-            if (new_thr.temp_min > new_thr.temp_max) valid = false;
-            if (new_thr.hum_min > new_thr.hum_max) valid = false;
-            if (new_thr.soil_min > new_thr.soil_max) valid = false;
-            if (new_thr.light_min > new_thr.light_max) valid = false;
+            if (new_set.temp_min > new_set.temp_max) valid = false;
+            if (new_set.hum_min > new_set.hum_max) valid = false;
+            if (new_set.soil_min > new_set.soil_max) valid = false;
+            if (new_set.light_min > new_set.light_max) valid = false;
+
+            if (new_set.watering_duration_sec < 1) new_set.watering_duration_sec = 1;
 
             if (!valid) {
                 ESP_LOGW(TAG,
-                         "Odrzucono update progów (min > max). Otrzymano: T[%.2f..%.2f], H[%.2f..%.2f], S[%d..%d], L[%.2f..%.2f]",
-                         new_thr.temp_min, new_thr.temp_max,
-                         new_thr.hum_min, new_thr.hum_max,
-                         new_thr.soil_min, new_thr.soil_max,
-                         new_thr.light_min, new_thr.light_max);
+                         "Odrzucono update ustawień (min > max). Otrzymano: T[%.2f..%.2f], H[%.2f..%.2f], S[%d..%d], L[%.2f..%.2f]",
+                         new_set.temp_min, new_set.temp_max,
+                         new_set.hum_min, new_set.hum_max,
+                         new_set.soil_min, new_set.soil_max,
+                         new_set.light_min, new_set.light_max);
 
                 uint32_t suppressed = 0;
-                if (alert_limiter_allow("thresholds.rejected", esp_log_timestamp(), 10 * 1000, &suppressed)) {
+                if (alert_limiter_allow("settings.rejected", esp_log_timestamp(), 10 * 1000, &suppressed)) {
                     char details[256];
                     snprintf(details, sizeof(details),
-                             "{\"temp_min\":%.2f,\"temp_max\":%.2f,\"hum_min\":%.2f,\"hum_max\":%.2f,\"soil_min\":%d,\"soil_max\":%d,\"light_min\":%.2f,\"light_max\":%.2f,\"suppressed\":%lu}",
-                             new_thr.temp_min, new_thr.temp_max,
-                             new_thr.hum_min, new_thr.hum_max,
-                             new_thr.soil_min, new_thr.soil_max,
-                             new_thr.light_min, new_thr.light_max,
+                             "{\"temp\":[%.1f,%.1f],\"hum\":[%.1f,%.1f],\"soil\":[%d,%d],\"light\":[%.1f,%.1f],\"suppressed\":%lu}",
+                             new_set.temp_min, new_set.temp_max,
+                             new_set.hum_min, new_set.hum_max,
+                             new_set.soil_min, new_set.soil_max,
+                             new_set.light_min, new_set.light_max,
                              (unsigned long)suppressed);
-                    mqtt_app_send_alert2_details("thresholds.rejected", "warning", "thresholds", "Threshold update rejected (min > max)", details);
+                    mqtt_app_send_alert2_details("settings.rejected", "warning", "command", "Rejected settings update (min > max)", details);
                 }
-
-                cJSON_Delete(root);
-                return;
+            } else {
+                settings = new_set;
+                ESP_LOGI(TAG, "Zaktualizowano ustawienia i czas podlewania: %d s", settings.watering_duration_sec);
+                save_settings_to_nvs();
             }
-
-            thresholds = new_thr;
-            save_thresholds_to_nvs(); // Save to NVS persistence
-
-            ESP_LOGI(TAG,
-                     "Zaktualizowano progi: T[%.2f..%.2f], H[%.2f..%.2f], S[%d..%d], L[%.2f..%.2f]",
-                     thresholds.temp_min, thresholds.temp_max,
-                     thresholds.hum_min, thresholds.hum_max,
-                     thresholds.soil_min, thresholds.soil_max,
-                     thresholds.light_min, thresholds.light_max);
-
-            if (alert_limiter_allow("thresholds.applied", esp_log_timestamp(), 5 * 1000, NULL)) {
-                mqtt_app_send_alert2("thresholds.applied", "info", "thresholds", "Thresholds updated");
-            }
-            
             cJSON_Delete(root);
         } else {
             uint32_t suppressed = 0;
-            if (alert_limiter_allow("thresholds.invalid_json", esp_log_timestamp(), 10 * 1000, &suppressed)) {
+            if (alert_limiter_allow("settings.invalid_json", esp_log_timestamp(), 10 * 1000, &suppressed)) {
                 char details[96];
                 snprintf(details, sizeof(details), "{\"len\":%d,\"suppressed\":%lu}", len, (unsigned long)suppressed);
-                mqtt_app_send_alert2_details("thresholds.invalid_json", "warning", "thresholds", "Invalid JSON for thresholds", details);
+                mqtt_app_send_alert2_details("settings.invalid_json", "warning", "settings", "Invalid JSON for settings", details);
             }
         }
     }
@@ -485,11 +494,11 @@ void publisher_task(void *pvParameters) {
         int64_t now = (int64_t)tv.tv_sec * 1000 + (tv.tv_usec / 1000);
 
         // Uruchom tylko jeśli mamy poprawny odczyt gleby i zdefiniowany próg
-        if (data.soil_moisture != -1 && thresholds.soil_min > -1000) {  // -1000 to bezpieczny margines od -INFINITY/INT_MIN
-            if (data.soil_moisture < thresholds.soil_min) {
+        if (data.soil_moisture != -1 && settings.soil_min > -1000) {  // -1000 to bezpieczny margines od -INFINITY/INT_MIN
+            if (data.soil_moisture < settings.soil_min) {
                 if (now - last_water_time > AUTO_WATER_COOLDOWN_MS) {
-                     ESP_LOGW(TAG, "Auto-watering triggered! Soil: %d%% < Min: %d%%", data.soil_moisture, thresholds.soil_min);
-                     perform_watering(5, "auto"); // 5 sekund automatu
+                     ESP_LOGW(TAG, "Auto-watering triggered! Soil: %d%% < Min: %d%%", data.soil_moisture, settings.soil_min);
+                     perform_watering(settings.watering_duration_sec, "auto"); // Czas z ustawień
                 }
             }
         }
@@ -512,8 +521,8 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     
-    // Wczytaj progi z NVS (jeśli istnieją)
-    load_thresholds_from_nvs();
+    // Wczytanie ustawień z NVS
+    load_settings_from_nvs();
 
     // Inicjalizacja sensorów (Wcześniej niż WiFi/BLE, żeby uniknąć zakłóceń przy starcie I2C)
     if (sensors_init() != ESP_OK) {
