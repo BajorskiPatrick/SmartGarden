@@ -230,20 +230,67 @@ public class SmartGardenService {
             settings.setLightMin(dto.getLightMin());
         if (dto.getLightMax() != null)
             settings.setLightMax(dto.getLightMax());
+
         if (dto.getWateringDurationSeconds() != null)
             settings.setWateringDurationSeconds(dto.getWateringDurationSeconds());
+
         if (dto.getMeasurementIntervalSeconds() != null)
             settings.setMeasurementIntervalSeconds(dto.getMeasurementIntervalSeconds());
 
         deviceSettingsRepository.save(settings);
 
         // Publish to MQTT
-        // Topic: garden/{user}/{device}/settings
-        // Payload: {"temp_min": 10.0, "watering_duration_sec": 5, ...}
-        String topic = String.format("garden/%s/%s/settings", device.getUserId(), mac);
-        String payload = buildThresholdsJson(settings);
-        mqttGateway.sendToMqtt(payload, topic);
-        log.info("Sent updated settings to {}", topic);
+        try {
+            // Map Entity to DTO (which has JSON annotations) to send proper JSON
+            DeviceSettingsDto fullDto = mapToDto(settings);
+            String payload = objectMapper.writeValueAsString(fullDto);
+            String topic = String.format("garden/%s/%s/settings", device.getUserId(), mac);
+            mqttGateway.sendToMqtt(payload, topic);
+            log.info("Published updated settings to {}", topic);
+        } catch (JsonProcessingException e) {
+            log.error("Failed to allow msg", e);
+        }
+    }
+
+    public void resetDeviceSettings(String mac) {
+        // Defaults:
+        // Temp/Hum/Light: Infinite (nulls/doubles) -> we set nulls in DTO to signify
+        // "no limit"
+        // But for updateDeviceSettings logic, we want to OVERWRITE existing values with
+        // defaults.
+        // So we need a DTO that has explicit default values.
+
+        DeviceSettingsDto defaults = new DeviceSettingsDto();
+
+        // Use "impossible" values to effectively disable checks or use defaults
+        // Backend entity uses Float/Int.
+        // Logic in ESP32: valid if min <= max.
+        // To "disable" limits: min = -Inf, max = Inf.
+        // Java Double.NEGATIVE_INFINITY translates to JSON specific handling or "null"
+        // if not supported?
+        // Jackson supports Infinity. Let's see if ESP32 cJSON supports it. cJSON might
+        // not parse "Infinity".
+        // ESP32 code: .temp_min = -INFINITY.
+        // If we send null in JSON, our update logic IGNORES it (keeps old value).
+        // So we must send explicit values.
+
+        // Let's explicitly set these to "safe" wide ranges.
+        defaults.setTempMin(-100.0f);
+        defaults.setTempMax(100.0f);
+        defaults.setHumMin(0.0f);
+        defaults.setHumMax(100.0f);
+        defaults.setSoilMin(0);
+        defaults.setSoilMax(100);
+        defaults.setLightMin(0.0f);
+        defaults.setLightMax(1000000.0f);
+
+        defaults.setWateringDurationSeconds(5);
+        defaults.setMeasurementIntervalSeconds(60);
+
+        updateDeviceSettings(mac, defaults);
+        log.info("Reset settings for device {} to defaults.", mac);
+        updateDeviceSettings(mac, defaults);
+        log.info("Reset settings for device {} to defaults.", mac);
     }
 
     private DeviceSettingsDto mapToDto(DeviceSettings s) {
