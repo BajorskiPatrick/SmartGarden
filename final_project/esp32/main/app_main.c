@@ -5,7 +5,7 @@
 #include "nvs_flash.h"
 #include "esp_event.h"
 #include "esp_netif.h"
-// #include "protocol_examples_common.h" // USUNIĘTE
+#include "driver/gpio.h"
 #include "esp_log.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
@@ -26,6 +26,11 @@
 
 #define TAG "MAIN_APP"
 #define PUBLISH_INTERVAL_MS 10000
+#define PUMP_GPIO 2
+#define AUTO_WATER_COOLDOWN_MS (30 * 60 * 1000) // 30 minut cooldownu
+
+static int64_t last_water_time = 0;
+
 
 // Domyślne progi - "otwarte" (brak alertów)
 static sensor_thresholds_t thresholds = {
@@ -237,6 +242,38 @@ void check_thresholds(telemetry_data_t *data) {
     }
 }
 
+static void perform_watering(int duration, const char* source) {
+    char details[64];
+    snprintf(details, sizeof(details), "{\"duration\":%d,\"source\":\"%s\"}", duration, source);
+    
+    // Alert notify start
+    if (strcmp(source, "auto") == 0) {
+        mqtt_app_send_alert2_details("auto_watering_started", "info", "system", "Auto-watering started", details);
+    } else {
+        mqtt_app_send_alert2("command.watering_started", "info", "command", "Watering started");
+    }
+
+    ESP_LOGI(TAG, "START PODLEWANIA (%s, %d s)", source, duration);
+    gpio_set_level(PUMP_GPIO, 1);
+    
+    // Delay blokujący (w tym czasie nie ma pomiarów - akceptowalne)
+    vTaskDelay(pdMS_TO_TICKS(duration * 1000));
+    
+    gpio_set_level(PUMP_GPIO, 0);
+    ESP_LOGI(TAG, "STOP PODLEWANIA");
+
+    // Alert notify stop
+    if (strcmp(source, "auto") == 0) {
+        mqtt_app_send_alert2("auto_watering_finished", "info", "system", "Auto-watering finished");
+    } else {
+        mqtt_app_send_alert2("command.watering_finished", "info", "command", "Watering finished");
+    }
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    last_water_time = (int64_t)tv.tv_sec * 1000 + (tv.tv_usec / 1000);
+}
+
 void process_incoming_data(const char *topic, const char *payload, int len) {
     // Sprawdzenie czy to komenda czy progi
     if (strstr(topic, "/command/water")) {
@@ -261,13 +298,7 @@ void process_incoming_data(const char *topic, const char *payload, int len) {
                 }
             }
 
-            mqtt_app_send_alert2("command.watering_started", "info", "command", "Watering started");
-
-            ESP_LOGI(TAG, "START PODLEWANIA (%d s)", duration);
-            // TODO: sterowanie pompą GPIO
-            vTaskDelay(pdMS_TO_TICKS(duration * 1000));
-            ESP_LOGI(TAG, "STOP PODLEWANIA");
-            mqtt_app_send_alert2("command.watering_finished", "info", "command", "Watering finished");
+            perform_watering(duration, "manual");
 
             // Po podlewaniu sprawdź wodę
             int w_ok;
@@ -444,7 +475,24 @@ void publisher_task(void *pvParameters) {
         check_thresholds(&data);
 
         // 3. Wysłanie danych
-        mqtt_app_send_telemetry(&data);
+        if (mqtt_app_is_connected()) {
+            mqtt_app_send_telemetry(&data);
+        }
+
+        // Autopodlewanie logic
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        int64_t now = (int64_t)tv.tv_sec * 1000 + (tv.tv_usec / 1000);
+
+        // Uruchom tylko jeśli mamy poprawny odczyt gleby i zdefiniowany próg
+        if (data.soil_moisture != -1 && thresholds.soil_min > -1000) {  // -1000 to bezpieczny margines od -INFINITY/INT_MIN
+            if (data.soil_moisture < thresholds.soil_min) {
+                if (now - last_water_time > AUTO_WATER_COOLDOWN_MS) {
+                     ESP_LOGW(TAG, "Auto-watering triggered! Soil: %d%% < Min: %d%%", data.soil_moisture, thresholds.soil_min);
+                     perform_watering(5, "auto"); // 5 sekund automatu
+                }
+            }
+        }
 
         vTaskDelay(pdMS_TO_TICKS(PUBLISH_INTERVAL_MS));
     }
@@ -453,7 +501,12 @@ void publisher_task(void *pvParameters) {
 void app_main(void)
 {
     ESP_LOGI(TAG, "Start systemu Smart Garden");
-    
+
+    // Konfiguracja GPIO pompy
+    gpio_reset_pin(PUMP_GPIO);
+    gpio_set_direction(PUMP_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(PUMP_GPIO, 0);
+
     // Inicjalizacja usług systemowych
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
