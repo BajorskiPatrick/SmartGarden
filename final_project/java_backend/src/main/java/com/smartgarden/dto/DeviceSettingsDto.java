@@ -32,4 +32,8 @@ public class DeviceSettingsDto {
     @JsonProperty("light_max")
     @JsonAlias("lightMax")
     private Float lightMax;
+
+    @JsonProperty("watering_duration_sec")
+    @JsonAlias("wateringDurationSeconds")
+    private Integer wateringDurationSeconds;
 }

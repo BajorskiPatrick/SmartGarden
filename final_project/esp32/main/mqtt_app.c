@@ -201,8 +201,8 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
         esp_mqtt_client_subscribe(client, topic, 1);
         ESP_LOGI(TAG, "Subskrypcja: %s", topic);
 
-        // 2. Subskrypcja progów (NOWOŚĆ)
-        snprintf(topic, sizeof(topic), "garden/%s/%s/thresholds", s_user_id, s_device_id);
+        // 2. Subskrypcja settings (NOWOŚĆ - zmiana z thresholds)
+        snprintf(topic, sizeof(topic), "garden/%s/%s/settings", s_user_id, s_device_id);
         esp_mqtt_client_subscribe(client, topic, 1);
         ESP_LOGI(TAG, "Subskrypcja: %s", topic);
 

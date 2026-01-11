@@ -168,13 +168,28 @@ public class SmartGardenService {
         }
     }
 
-    public void sendWaterCommand(String mac) {
+    public void sendWaterCommand(String mac, Integer duration) {
         // Topic: garden/{user}/{device}/command/water
         Device device = getOrCreateDevice(mac, "unknown_user");
         String topic = String.format("garden/%s/%s/command/water", device.getUserId(), mac);
-        String payload = "{\"duration\": 5}"; // Default 5 seconds
+
+        String payload;
+        if (duration != null && duration > 0) {
+            payload = String.format("{\"duration\": %d}", duration);
+        } else {
+            // Sending empty JSON or default duration?
+            // If we send empty {}, ESP32 uses its configured default.
+            // If we send explicitly "duration": 5, it overrides.
+            // Let's send empty to let ESP32 decide based on its settings,
+            // OR fetch settings here and send them?
+            // ESP32 logic: "int duration = settings.watering_duration_sec; ... if
+            // (cJSON_IsNumber(d)) duration = d->valueint;"
+            // So sending {} triggers default.
+            payload = "{}";
+        }
+
         mqttGateway.sendToMqtt(payload, topic);
-        log.info("Sent WATER command to {}", topic);
+        log.info("Sent WATER command to {} with duration {}", topic, duration);
     }
 
     public DeviceSettingsDto getDeviceSettings(String mac) {
@@ -185,6 +200,7 @@ public class SmartGardenService {
                     // Create defaults if not exists
                     DeviceSettings defaults = new DeviceSettings();
                     defaults.setDevice(settingsDevice);
+                    defaults.setWateringDurationSeconds(5); // Default 5s in backend too
                     deviceSettingsRepository.save(defaults);
                     return mapToDto(defaults);
                 });
@@ -213,16 +229,18 @@ public class SmartGardenService {
             settings.setLightMin(dto.getLightMin());
         if (dto.getLightMax() != null)
             settings.setLightMax(dto.getLightMax());
+        if (dto.getWateringDurationSeconds() != null)
+            settings.setWateringDurationSeconds(dto.getWateringDurationSeconds());
 
         deviceSettingsRepository.save(settings);
 
         // Publish to MQTT
-        // Topic: garden/{user}/{device}/thresholds
-        // Payload: {"temp_min": 10.0, ...}
-        String topic = String.format("garden/%s/%s/thresholds", device.getUserId(), mac);
+        // Topic: garden/{user}/{device}/settings (CHANGED from thresholds)
+        // Payload: {"temp_min": 10.0, "watering_duration_sec": 5, ...}
+        String topic = String.format("garden/%s/%s/settings", device.getUserId(), mac);
         String payload = buildThresholdsJson(settings);
         mqttGateway.sendToMqtt(payload, topic);
-        log.info("Sent updated thresholds to {}", topic);
+        log.info("Sent updated settings to {}", topic);
     }
 
     private DeviceSettingsDto mapToDto(DeviceSettings s) {
@@ -235,6 +253,7 @@ public class SmartGardenService {
         dto.setSoilMax(s.getSoilMax());
         dto.setLightMin(s.getLightMin());
         dto.setLightMax(s.getLightMax());
+        dto.setWateringDurationSeconds(s.getWateringDurationSeconds());
         return dto;
     }
 

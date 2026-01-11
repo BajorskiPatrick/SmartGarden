@@ -33,4 +33,6 @@ public class DeviceSettings {
 
     private Float lightMin;
     private Float lightMax;
+
+    private Integer wateringDurationSeconds;
 }
