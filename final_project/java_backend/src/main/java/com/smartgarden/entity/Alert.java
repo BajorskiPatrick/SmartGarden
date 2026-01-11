@@ -1,5 +1,6 @@
 package com.smartgarden.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -19,6 +20,7 @@ public class Alert {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "device_mac", nullable = false)
+    @JsonIgnore
     private Device device;
 
     @Column(nullable = false)

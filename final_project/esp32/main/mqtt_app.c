@@ -15,7 +15,10 @@
 
 #include "alert_limiter.h"
 
+#include "alert_limiter.h"
+
 #include <math.h>
+#include <sys/time.h>
 
 static const char *TAG = "MQTT_APP";
 
@@ -37,7 +40,7 @@ static char s_mqtt_login[WIFI_PROV_MAX_MQTT_LOGIN] = {0};
 static char s_mqtt_pass[WIFI_PROV_MAX_MQTT_PASS] = {0};
 
 typedef struct {
-    uint32_t timestamp_ms;
+    int64_t timestamp_ms;
     char code[48];
     char severity[10];
     char subsystem[16];
@@ -52,6 +55,12 @@ static size_t s_preinit_alerts_count = 0;
 static bool s_telemetry_buffering = false;
 static uint32_t s_telemetry_dropped = 0;
 static uint32_t s_alert_dropped = 0;
+
+static int64_t get_time_ms(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (int64_t)tv.tv_sec * 1000 + (tv.tv_usec / 1000);
+}
 
 static void enqueue_preinit_alert(const mqtt_alert_record_t *rec) {
     if (!rec) return;
@@ -394,7 +403,7 @@ void mqtt_app_send_alert2_details(const char* code, const char* severity, const 
     mqtt_alert_record_t rec;
     memset(&rec, 0, sizeof(rec));
 
-    rec.timestamp_ms = esp_log_timestamp();
+    rec.timestamp_ms = get_time_ms();
     strlcpy(rec.code, code ? code : "unknown", sizeof(rec.code));
     strlcpy(rec.severity, severity ? severity : "warning", sizeof(rec.severity));
     strlcpy(rec.subsystem, subsystem ? subsystem : "app", sizeof(rec.subsystem));
@@ -499,7 +508,7 @@ void mqtt_app_publish_capabilities(void) {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "device", s_device_id);
     cJSON_AddStringToObject(root, "user", s_user_id);
-    cJSON_AddNumberToObject(root, "timestamp", esp_log_timestamp());
+    cJSON_AddNumberToObject(root, "timestamp", get_time_ms());
 
     cJSON *fields = cJSON_CreateArray();
     if (available & TELEMETRY_FIELD_SOIL) cJSON_AddItemToArray(fields, cJSON_CreateString("soil_moisture_pct"));

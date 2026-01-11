@@ -13,7 +13,9 @@ public class ProvisioningController {
     private final ProvisioningService provisioningService;
 
     @PostMapping("/device")
-    public ResponseEntity<ProvisioningService.MqttCredentialsDto> registerDevice(@RequestParam String macAddress) {
-        return ResponseEntity.ok(provisioningService.registerDevice(macAddress));
+    public ResponseEntity<ProvisioningService.MqttCredentialsDto> registerDevice(
+            @RequestParam("mac") String macAddress,
+            java.security.Principal principal) {
+        return ResponseEntity.ok(provisioningService.registerDevice(macAddress, principal.getName()));
     }
 }

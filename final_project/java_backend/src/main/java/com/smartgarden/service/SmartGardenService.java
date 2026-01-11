@@ -18,8 +18,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
-import java.util.Optional;
+import java.time.ZoneId;
 
 @Service
 @RequiredArgsConstructor
@@ -50,7 +51,14 @@ public class SmartGardenService {
 
             Measurement measurement = new Measurement();
             measurement.setDevice(device);
-            measurement.setTimestamp(LocalDateTime.now());
+
+            // Use timestamp from payload if available (epoch millis)
+            if (root.has("timestamp")) {
+                long ts = root.get("timestamp").asLong();
+                measurement.setTimestamp(LocalDateTime.ofInstant(Instant.ofEpochMilli(ts), ZoneId.systemDefault()));
+            } else {
+                measurement.setTimestamp(LocalDateTime.now());
+            }
 
             if (root.has("sensors")) {
                 JsonNode sensors = root.get("sensors");
@@ -98,8 +106,27 @@ public class SmartGardenService {
 
             Alert alert = new Alert();
             alert.setDevice(device);
-            alert.setTimestamp(LocalDateTime.now());
 
+            if (root.has("timestamp")) {
+                long ts = root.get("timestamp").asLong();
+                alert.setTimestamp(LocalDateTime.ofInstant(Instant.ofEpochMilli(ts), ZoneId.systemDefault()));
+            } else {
+                alert.setTimestamp(LocalDateTime.now());
+            }
+
+            // Known Alert Codes from ESP32:
+            // - temperature_low, temperature_high
+            // - humidity_low, humidity_high
+            // - soil_moisture_low, soil_moisture_high
+            // - light_low, light_high
+            // - water_level_critical (CRITICAL)
+            // - provisioning.timeout, provisioning.incomplete, provisioning.save_failed
+            // - wifi.disconnected, wifi.got_ip
+            // - system.factory_reset
+            // - sensor.*_recovered, sensor.*_read_failed
+            // - connection.mqtt_connected, connection.mqtt_disconnected,
+            // connection.mqtt_error
+            // - command.watering_started, command.watering_finished
             if (root.has("code"))
                 alert.setCode(root.get("code").asText());
             if (root.has("severity"))
@@ -212,20 +239,12 @@ public class SmartGardenService {
     }
 
     private String buildThresholdsJson(DeviceSettings s) {
-        // Simple manual JSON construction to avoid jackson overhead here if preferred,
-        // or use ObjectMapper
-        // Using string formatting for simplicity
-        return String.format(java.util.Locale.US,
-                "{" +
-                        "\"temp_min\": %.2f, \"temp_max\": %.2f, " +
-                        "\"hum_min\": %.2f, \"hum_max\": %.2f, " +
-                        "\"soil_min\": %d, \"soil_max\": %d, " +
-                        "\"light_min\": %.2f, \"light_max\": %.2f" +
-                        "}",
-                s.getTempMin(), s.getTempMax(),
-                s.getHumMin(), s.getHumMax(),
-                s.getSoilMin(), s.getSoilMax(),
-                s.getLightMin(), s.getLightMax());
+        try {
+            return objectMapper.writeValueAsString(mapToDto(s));
+        } catch (JsonProcessingException e) {
+            log.error("Failed to serialize thresholds", e);
+            return "{}";
+        }
     }
 
     private Device getOrCreateDevice(String mac, String userId) {
