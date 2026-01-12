@@ -173,6 +173,27 @@ public class SmartGardenService {
         log.info("Sent WATER command to {} with duration {}", topic, duration);
     }
 
+    public void sendMeasureCommand(String mac, java.util.List<String> fields) {
+        Device device = getOrCreateDevice(mac, "unknown_user");
+        String topic = String.format("garden/%s/%s/command/read", device.getUserId(), mac);
+
+        String payload;
+        try {
+            if (fields != null && !fields.isEmpty()) {
+                // Construct {"fields": ["f1", "f2"]}
+                java.util.Map<String, Object> map = new java.util.HashMap<>();
+                map.put("fields", fields);
+                payload = objectMapper.writeValueAsString(map);
+            } else {
+                payload = "{}";
+            }
+            mqttGateway.sendToMqtt(payload, topic);
+            log.info("Sent MEASURE command to {} (fields={})", topic, fields);
+        } catch (JsonProcessingException e) {
+            log.error("Failed to construct measure command payload", e);
+        }
+    }
+
     // --- Device Authoritative Settings Implementation ---
 
     public DeviceSettingsDto getDeviceSettings(String mac) {
