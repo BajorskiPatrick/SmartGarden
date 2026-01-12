@@ -31,3 +31,7 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# Mosquitto runtime data
+final_project/java_backend/mosquitto/data/
+final_project/java_backend/mosquitto/log/

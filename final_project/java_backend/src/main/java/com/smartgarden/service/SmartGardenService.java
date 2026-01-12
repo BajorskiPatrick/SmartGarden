@@ -155,6 +155,25 @@ public class SmartGardenService {
 
             alertRepository.save(alert);
             log.warn("Received ALERT from device {}: {}", mac, alert.getMessage());
+            
+            // Broadcast valid Alert to WebSocket
+            // Need DTO or just send entity? Entity is fine if no recursion issue (Alert -> Device)
+            // But Alert has Device. Let's send a simplified map or DTO
+            java.util.Map<String, Object> alertMsg = new java.util.HashMap<>();
+            alertMsg.put("id", alert.getId());
+            alertMsg.put("message", alert.getMessage());
+            alertMsg.put("severity", alert.getSeverity());
+            alertMsg.put("timestamp", alert.getTimestamp().toString());
+            alertMsg.put("deviceMac", mac);
+            
+            // Send to device topic
+            messagingTemplate.convertAndSend("/topic/device/" + mac + "/alerts", alertMsg);
+            
+            // Send to user global topic (for bells)
+            // We need userId. We looked it up earlier: device.getUserId().
+            if (device.getUserId() != null) {
+                messagingTemplate.convertAndSend("/topic/user/" + device.getUserId() + "/alerts", alertMsg);
+            }
 
         } catch (JsonProcessingException e) {
             log.error("Failed to parse alert payload", e);
@@ -194,6 +213,14 @@ public class SmartGardenService {
         log.info("Sent WATER command to {} with duration {}", topic, duration);
     }
 
+    public void sendMeasureCommand(String mac) {
+        Device device = getOrCreateDevice(mac, "unknown_user");
+        // ESP subscribes to "command/read" not "command/measure"
+        String topic = String.format("garden/%s/%s/command/read", device.getUserId(), mac);
+        mqttGateway.sendToMqtt("{}", topic);
+        log.info("Sent READ command to {}", topic);
+    }
+
     // --- Device Authoritative Settings Implementation ---
 
     public DeviceSettingsDto getDeviceSettings(String mac) {
@@ -209,13 +236,17 @@ public class SmartGardenService {
 
         try {
             // Wait up to 5 seconds for response
-            return future.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            DeviceSettingsDto dto = future.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            // Append local DB info (activeProfileName)
+            dto.setActiveProfileName(device.getActiveProfileName());
+            return dto;
         } catch (Exception e) {
             log.error("Timeout or error waiting for device settings for {}: {}", mac, e.getMessage());
             pendingSettingsRequests.remove(mac);
             // Return empty settings (defaults) or indicate error.
-            // Returning empty DTO prevents null pointer exceptions in callers.
-            return new DeviceSettingsDto();
+            DeviceSettingsDto dto = new DeviceSettingsDto();
+            dto.setActiveProfileName(device.getActiveProfileName());
+            return dto;
         }
     }
 
@@ -243,8 +274,16 @@ public class SmartGardenService {
     public void updateDeviceSettings(String mac, DeviceSettingsDto dto) {
         Device device = getOrCreateDevice(mac, "unknown");
 
-        // Publish to MQTT directly (No DB Save)
+        // 1. Update persisted metadata (Active Profile)
+        if (dto.getActiveProfileName() != null) {
+            device.setActiveProfileName(dto.getActiveProfileName());
+            deviceRepository.save(device);
+        }
+        
+        // 2. Publish to MQTT directly
         try {
+            // We only send the configuration fields to ESP, not the metadata like 'activeProfileName' which ESP ignores anyway usually, but cleaner to keep.
+            // ESP usually uses Json library that ignores unknown fields, so sending extra field is safe.
             String payload = objectMapper.writeValueAsString(dto);
             String topic = String.format("garden/%s/%s/settings", device.getUserId(), mac);
             mqttGateway.sendToMqtt(payload, topic);
@@ -272,5 +311,12 @@ public class SmartGardenService {
                     newDevice.setLastSeen(LocalDateTime.now());
                     return deviceRepository.save(newDevice);
                 });
+    }
+
+    public void updateDeviceName(String mac, String friendlyName) {
+        Device device = getOrCreateDevice(mac, "unknown");
+        device.setFriendlyName(friendlyName);
+        deviceRepository.save(device);
+        log.info("Renamed device {} to {}", mac, friendlyName);
     }
 }

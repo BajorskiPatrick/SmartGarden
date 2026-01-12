@@ -20,8 +20,11 @@ export function useTelemetryWebSocket(macAddress: string) {
     useEffect(() => {
         if (!macAddress || !token) return;
 
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.hostname;
+        const port = '8080'; // Still hardcoded port, can be improved but follows docker setup
         const client = new Client({
-            brokerURL: 'ws://localhost:8080/ws', // Need to handle production URL
+            brokerURL: `${protocol}//${host}:${port}/ws`,
             connectHeaders: {
                 Authorization: `Bearer ${token}`, // Pass JWT if backend supports it in Upgrade header or CONNECT frame
             },

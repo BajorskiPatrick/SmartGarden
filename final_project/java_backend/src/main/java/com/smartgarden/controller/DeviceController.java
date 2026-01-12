@@ -28,9 +28,27 @@ public class DeviceController {
     private final AlertRepository alertRepository;
 
     @GetMapping
-    public List<Device> getAllDevices() {
+    public List<com.smartgarden.dto.DeviceSummaryDto> getAllDevices() {
         String username = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication().getName();
-        return deviceRepository.findByUserId(username);
+        List<Device> devices = deviceRepository.findByUserId(username);
+
+        return devices.stream().map(device -> {
+            com.smartgarden.dto.DeviceSummaryDto dto = new com.smartgarden.dto.DeviceSummaryDto(device);
+            // Get latest measurement
+            org.springframework.data.domain.Pageable topOne = org.springframework.data.domain.PageRequest.of(0, 1, org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "timestamp"));
+            List<Measurement> measurements = measurementRepository.findByDevice_MacAddress(device.getMacAddress(), topOne).getContent();
+
+            if (!measurements.isEmpty()) {
+                Measurement m = measurements.get(0);
+                dto.setTemperature(m.getTemperature());
+                dto.setSoilMoisture(m.getSoilMoisture());
+                dto.setHumidity(m.getHumidity());
+                dto.setLightLux(m.getLightLux());
+                dto.setWaterTankOk(m.getWaterTankOk());
+                dto.setLastMeasurementTime(m.getTimestamp());
+            }
+            return dto;
+        }).collect(java.util.stream.Collectors.toList());
     }
 
     @GetMapping("/{mac}")
@@ -96,6 +114,11 @@ public class DeviceController {
         smartGardenService.sendWaterCommand(normalizeMac(mac), duration);
     }
 
+    @PostMapping("/{mac}/measure")
+    public void requestMeasurement(@PathVariable String mac) {
+        smartGardenService.sendMeasureCommand(normalizeMac(mac));
+    }
+
     @GetMapping("/{mac}/settings")
     public com.smartgarden.dto.DeviceSettingsDto getSettings(@PathVariable String mac) {
         return smartGardenService.getDeviceSettings(normalizeMac(mac));
@@ -104,6 +127,14 @@ public class DeviceController {
     @PostMapping("/{mac}/settings")
     public void updateSettings(@PathVariable String mac, @RequestBody com.smartgarden.dto.DeviceSettingsDto settings) {
         smartGardenService.updateDeviceSettings(normalizeMac(mac), settings);
+    }
+
+    @PatchMapping("/{mac}")
+    public void renameDevice(@PathVariable String mac, @RequestBody java.util.Map<String, String> body) {
+        String newName = body.get("friendlyName");
+        if (newName != null) {
+            smartGardenService.updateDeviceName(normalizeMac(mac), newName);
+        }
     }
 
     @PostMapping("/{mac}/settings/reset")

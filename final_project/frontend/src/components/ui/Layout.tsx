@@ -2,6 +2,7 @@
 import { Outlet, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { LogOut, Sprout } from 'lucide-react';
+import { NotificationBell } from '../../features/notifications/NotificationBell';
 
 export function Layout() {
   const { logout, username } = useAuth();
@@ -24,6 +25,7 @@ export function Layout() {
             <span className="text-sm text-gray-500 dark:text-gray-400">
               {username}
             </span>
+            <NotificationBell />
             <button
               onClick={handleLogout}
               className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"

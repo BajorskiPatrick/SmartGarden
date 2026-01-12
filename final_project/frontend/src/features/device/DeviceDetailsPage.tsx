@@ -70,7 +70,7 @@ export function DeviceDetailsPage() {
     );
   }
 
-  const isOnline = device.status === 'ONLINE';
+  const isOnline = device.online ?? false;
 
   return (
     <div className="space-y-6">
@@ -98,14 +98,13 @@ export function DeviceDetailsPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2">
-           <TelemetryChart data={displayData} />
-        </div>
-        <div>
-          <ControlPanel macAddress={device.macAddress} />
-        </div>
+      {/* Control Panel at top */}
+      <div className="mb-6">
+        <ControlPanel macAddress={device.macAddress} />
       </div>
+
+      {/* Telemetry Charts - Full Width */}
+      <TelemetryChart data={displayData} />
     </div>
   );
 }

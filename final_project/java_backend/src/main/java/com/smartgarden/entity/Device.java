@@ -28,4 +28,7 @@ public class Device {
     private LocalDateTime lastSeen;
 
     private boolean online;
+
+    @Column(name = "active_profile_name")
+    private String activeProfileName;
 }

@@ -40,4 +40,8 @@ public class DeviceSettingsDto {
     @JsonProperty("measurement_interval_sec")
     @JsonAlias("measurementIntervalSeconds")
     private Integer measurementIntervalSeconds;
+
+    @JsonProperty("active_profile_name")
+    @JsonAlias("activeProfileName")
+    private String activeProfileName;
 }

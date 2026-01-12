@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Droplets, Settings, RotateCcw } from 'lucide-react';
+import { Droplets, Settings, RotateCcw, Activity } from 'lucide-react';
 import { api } from '../../lib/axios';
 import { useMutation } from '@tanstack/react-query';
 
@@ -19,6 +19,15 @@ export function ControlPanel({ macAddress }: ControlPanelProps) {
     },
   });
 
+  const measureMutation = useMutation({
+    mutationFn: async () => {
+      await api.post(`/devices/${macAddress}/measure`);
+    },
+    onSuccess: () => {
+      // Telemetry will be pushed via WebSocket, no need for alert
+    },
+  });
+
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
       <h3 className="text-lg font-semibold mb-6 text-gray-900 dark:text-white flex items-center gap-2">
@@ -27,7 +36,32 @@ export function ControlPanel({ macAddress }: ControlPanelProps) {
       </h3>
 
       <div className="space-y-6">
+        {/* Measure Now Section */}
         <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            Request Telemetry
+          </label>
+          <button
+            onClick={() => measureMutation.mutate()}
+            disabled={measureMutation.isPending}
+            className="w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg transition-colors flex items-center justify-center gap-2"
+          >
+            {measureMutation.isPending ? (
+              'Requesting...'
+            ) : (
+              <>
+                <Activity className="w-4 h-4" />
+                Measure Now
+              </>
+            )}
+          </button>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            Request fresh sensor readings from the device
+          </p>
+        </div>
+
+        {/* Watering Section */}
+        <div className="border-t border-gray-200 dark:border-gray-700 pt-6">
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
             Manual Watering (seconds)
           </label>
