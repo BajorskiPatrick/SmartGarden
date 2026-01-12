@@ -96,6 +96,11 @@ public class DeviceController {
         smartGardenService.sendWaterCommand(normalizeMac(mac), duration);
     }
 
+    @PostMapping("/{mac}/measure")
+    public void measure(@PathVariable String mac, @RequestBody(required = false) java.util.List<String> fields) {
+        smartGardenService.sendMeasureCommand(normalizeMac(mac), fields);
+    }
+
     @GetMapping("/{mac}/settings")
     public com.smartgarden.dto.DeviceSettingsDto getSettings(@PathVariable String mac) {
         return smartGardenService.getDeviceSettings(normalizeMac(mac));
