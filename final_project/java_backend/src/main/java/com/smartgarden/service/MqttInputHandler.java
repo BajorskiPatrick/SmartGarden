@@ -38,6 +38,12 @@ public class MqttInputHandler {
                     smartGardenService.processAlert(payload);
                 } else if (topic.endsWith("/capabilities")) {
                     smartGardenService.processCapabilities(payload);
+                } else if (topic.endsWith("/settings/state")) {
+                    // garden/{user}/{mac}/settings/state
+                    String[] parts = topic.split("/");
+                    if (parts.length >= 3) {
+                        smartGardenService.processSettingsState(parts[2], payload);
+                    }
                 } else {
                     log.debug("Ignored message on topic: {}", topic);
                 }

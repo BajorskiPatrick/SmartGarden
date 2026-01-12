@@ -213,8 +213,16 @@ static void mqtt5_event_handler(void *handler_args, esp_event_base_t base, int32
         esp_mqtt_client_subscribe(client, topic, 1);
         ESP_LOGI(TAG, "Subskrypcja: %s", topic);
 
-        // 2. Subskrypcja settings (NOWOŚĆ - zmiana z thresholds)
+        // 2. Subskrypcja settings
         snprintf(topic, sizeof(topic), "garden/%s/%s/settings", s_user_id, s_device_id);
+        esp_mqtt_client_subscribe(client, topic, 1);
+        ESP_LOGI(TAG, "Subskrypcja: %s", topic);
+
+        snprintf(topic, sizeof(topic), "garden/%s/%s/settings/get", s_user_id, s_device_id);
+        esp_mqtt_client_subscribe(client, topic, 1);
+        ESP_LOGI(TAG, "Subskrypcja: %s", topic);
+
+        snprintf(topic, sizeof(topic), "garden/%s/%s/settings/reset", s_user_id, s_device_id);
         esp_mqtt_client_subscribe(client, topic, 1);
         ESP_LOGI(TAG, "Subskrypcja: %s", topic);
 
@@ -548,4 +556,11 @@ void mqtt_app_publish_capabilities(void) {
 
     cJSON_Delete(root);
     free(json_str);
+}
+
+void mqtt_app_publish_to_subpath(const char* subpath, const char* data, int qos) {
+    if (!client || !is_connected) return;
+    char topic[256];
+    snprintf(topic, sizeof(topic), "garden/%s/%s/%s", s_user_id, s_device_id, subpath);
+    esp_mqtt_client_publish(client, topic, data, 0, qos, 0);
 }
