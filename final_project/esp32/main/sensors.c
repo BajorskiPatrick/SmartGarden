@@ -9,8 +9,8 @@
 #include "veml7700.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_rom_sys.h" // Dla esp_rom_delay_us
-#include <sys/time.h>    // Dla gettimeofday
+#include "esp_rom_sys.h" 
+#include <sys/time.h>    
 
 #include "mqtt_app.h"
 #include "alert_limiter.h"
@@ -25,9 +25,14 @@ static const char *TAG = "SENSORS";
 
 #define WATER_LEVEL_GPIO            GPIO_NUM_18
 
+// --- NOWA KONFIGURACJA DLA POWER SAVE ---
+#define SOIL_POWER_GPIO             GPIO_NUM_27  
 #define SOIL_ADC_CHANNEL            ADC_CHANNEL_6
 #define SOIL_DRY_VAL                2800            
 #define SOIL_WET_VAL                1200            
+
+// Czas stabilizacji czujnika po włączeniu zasilania (ms)
+#define SENSOR_POWER_UP_DELAY_MS    50 
 
 // Zmienne globalne modułu (statyczne)
 static veml7700_handle_t veml_sensor;
@@ -47,7 +52,7 @@ static long map_val(long x, long in_min, long in_max, long out_min, long out_max
     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
-// Funkcja resetująca magistralę I2C (uwalnia linię SDA jeśli slave ją trzyma)
+// Funkcja resetująca magistralę I2C
 static void i2c_bus_reset(void) {
     ESP_LOGI(TAG, "Wykonuję reset magistrali I2C...");
     gpio_config_t io_conf = {
@@ -61,7 +66,6 @@ static void i2c_bus_reset(void) {
 
     gpio_set_level(I2C_MASTER_SDA_IO, 1);
     
-    // Generuj 9 taktów zegara, aby odblokować slave'a
     for (int i = 0; i < 9; i++) {
         gpio_set_level(I2C_MASTER_SCL_IO, 0);
         esp_rom_delay_us(10);
@@ -69,7 +73,6 @@ static void i2c_bus_reset(void) {
         esp_rom_delay_us(10);
     }
     
-    // Stop condition
     gpio_set_level(I2C_MASTER_SCL_IO, 0);
     esp_rom_delay_us(10);
     gpio_set_level(I2C_MASTER_SDA_IO, 0);
@@ -78,7 +81,6 @@ static void i2c_bus_reset(void) {
     esp_rom_delay_us(10);
     gpio_set_level(I2C_MASTER_SDA_IO, 1);
 
-    // Przywróć domyślny stan
     gpio_reset_pin(I2C_MASTER_SCL_IO);
     gpio_reset_pin(I2C_MASTER_SDA_IO);
     ESP_LOGI(TAG, "Reset magistrali I2C zakończony.");
@@ -87,11 +89,21 @@ static void i2c_bus_reset(void) {
 static void water_sensor_init(void) {
     gpio_reset_pin(WATER_LEVEL_GPIO);
     gpio_set_direction(WATER_LEVEL_GPIO, GPIO_MODE_INPUT);
-    gpio_set_pull_mode(WATER_LEVEL_GPIO, GPIO_PULLUP_ONLY);
-    ESP_LOGI(TAG, "Zainicjalizowano czujnik wody na GPIO %d", WATER_LEVEL_GPIO);
+    
+    // Domyślnie wyłączamy Pull-Up, żeby nie pobierać prądu
+    // Włączymy go tylko na moment odczytu.
+    gpio_set_pull_mode(WATER_LEVEL_GPIO, GPIO_FLOATING);
+    
+    ESP_LOGI(TAG, "Zainicjalizowano czujnik wody na GPIO %d (tryb Power Save)", WATER_LEVEL_GPIO);
 }
 
 static void soil_sensor_init(void) {
+    // 1. Konfiguracja pinu zasilającego
+    gpio_reset_pin(SOIL_POWER_GPIO);
+    gpio_set_direction(SOIL_POWER_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(SOIL_POWER_GPIO, 0); // Domyślnie wyłączony
+
+    // 2. Konfiguracja ADC
     adc_oneshot_unit_init_cfg_t init_config1 = {
         .unit_id = ADC_UNIT_1,
     };
@@ -103,7 +115,7 @@ static void soil_sensor_init(void) {
     };
     ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, SOIL_ADC_CHANNEL, &config));
 
-    ESP_LOGI(TAG, "Zainicjalizowano czujnik gleby (ADC Oneshot) na kanale %d", SOIL_ADC_CHANNEL);
+    ESP_LOGI(TAG, "Zainicjalizowano czujnik gleby (ADC Oneshot: CH%d, PowerPin: %d)", SOIL_ADC_CHANNEL, SOIL_POWER_GPIO);
 }
 
 static esp_err_t bme280_sensor_init(void)
@@ -159,7 +171,6 @@ esp_err_t sensors_init(void) {
     } else {
         s_has_bme280 = false;
         ESP_LOGW(TAG, "BME280 problem z inicjalizacją");
-        // Nie blokujemy startu, jeśli jeden czujnik padnie
     }
 
     return ESP_OK;
@@ -168,29 +179,25 @@ esp_err_t sensors_init(void) {
 telemetry_fields_mask_t sensors_get_available_fields_mask(void) {
     telemetry_fields_mask_t mask = 0;
 
-    if (s_has_soil) {
-        mask |= TELEMETRY_FIELD_SOIL;
-    }
-
-    if (s_has_bme280) {
-        mask |= (TELEMETRY_FIELD_TEMP | TELEMETRY_FIELD_HUM | TELEMETRY_FIELD_PRESS);
-    }
-
-    if (s_has_veml7700) {
-        mask |= TELEMETRY_FIELD_LIGHT;
-    }
-
-    if (s_has_water) {
-        mask |= TELEMETRY_FIELD_WATER;
-    }
+    if (s_has_soil) mask |= TELEMETRY_FIELD_SOIL;
+    if (s_has_bme280) mask |= (TELEMETRY_FIELD_TEMP | TELEMETRY_FIELD_HUM | TELEMETRY_FIELD_PRESS);
+    if (s_has_veml7700) mask |= TELEMETRY_FIELD_LIGHT;
+    if (s_has_water) mask |= TELEMETRY_FIELD_WATER;
 
     return mask;
 }
 
 void sensors_get_water_status(int *water_ok) {
+    // Włączenie Pull-Up (tylko na czas odczytu)
+    gpio_set_pull_mode(WATER_LEVEL_GPIO, GPIO_PULLUP_ONLY);
+    
+    // Krótkie opóźnienie dla stabilizacji sygnału
+    esp_rom_delay_us(50); 
+
     int pin_level = gpio_get_level(WATER_LEVEL_GPIO);
-    // 0 = Pływak w górze (Woda jest) -> water_ok = 0
-    // 1 = Pływak w dole (Brak wody) -> water_ok = 1 (Alarm)
+
+    // Wyłączenie Pull-Up (oszczędzanie energii)
+    gpio_set_pull_mode(WATER_LEVEL_GPIO, GPIO_FLOATING);
     if (pin_level == 0) {
         *water_ok = 0; 
     } else {
@@ -199,9 +206,21 @@ void sensors_get_water_status(int *water_ok) {
 }
 
 void sensors_read(telemetry_data_t *data) {
-    // 1. Gleba
+    // sekwencja:  Power Up -> Read -> Power Down
     int raw_adc = 0;
+    
+    // Włączanie zasilania czujnika
+    gpio_set_level(SOIL_POWER_GPIO, 1);
+    
+    // Czekaj na ustabilizowanie się elektroniki czujnika (50-100ms zazwyczaj wystarcza)
+    vTaskDelay(pdMS_TO_TICKS(SENSOR_POWER_UP_DELAY_MS));
+
+    // Odczyt
     esp_err_t soil_err = adc_oneshot_read(adc1_handle, SOIL_ADC_CHANNEL, &raw_adc);
+    
+    // Wyłączenie zasilania czujnika
+    gpio_set_level(SOIL_POWER_GPIO, 0);
+
     if (soil_err == ESP_OK) {
         int percentage = map_val(raw_adc, SOIL_DRY_VAL, SOIL_WET_VAL, 0, 100);
         if (percentage < 0) percentage = 0;
@@ -232,11 +251,12 @@ void sensors_read(telemetry_data_t *data) {
         s_prev_soil_ok = false;
     }
     
-    // 2. BME280
+    // BME280
     if (s_has_bme280) {
         bool bme_ok = false;
         esp_err_t force_err = bmp280_force_measurement(&bme280_dev);
         if (force_err == ESP_OK) {
+
             vTaskDelay(pdMS_TO_TICKS(50));
             float bme_temp = 0, bme_press = 0, bme_hum = 0;
             esp_err_t read_err = bmp280_read_float(&bme280_dev, &bme_temp, &bme_press, &bme_hum);
@@ -246,40 +266,22 @@ void sensors_read(telemetry_data_t *data) {
                 data->humidity = bme_hum;
                 bme_ok = true;
             } else {
-                data->temp = NAN;
-                data->pressure = NAN;
-                data->humidity = NAN;
+                data->temp = NAN; data->pressure = NAN; data->humidity = NAN;
             }
         } else {
-            data->temp = NAN;
-            data->pressure = NAN;
-            data->humidity = NAN;
-        }
-
-        if (bme_ok && !s_prev_bme_ok) {
-            if (alert_limiter_allow("sensor.bme280_recovered", esp_log_timestamp(), 60 * 1000, NULL)) {
-                mqtt_app_send_alert2("sensor.bme280_recovered", "info", "sensor", "BME280 recovered");
-            }
-        } else if (!bme_ok && s_prev_bme_ok) {
-            uint32_t suppressed = 0;
-            if (alert_limiter_allow("sensor.bme280_read_failed", esp_log_timestamp(), 5 * 60 * 1000, &suppressed)) {
-                char details[160];
-                snprintf(details, sizeof(details), "{\"force_ok\":%s,\"force_err\":%d,\"suppressed\":%lu}",
-                         (force_err == ESP_OK) ? "true" : "false", (int)force_err, (unsigned long)suppressed);
-                mqtt_app_send_alert2_details("sensor.bme280_read_failed", "warning", "sensor", "BME280 read failed", details);
-            }
+            data->temp = NAN; data->pressure = NAN; data->humidity = NAN;
         }
         s_prev_bme_ok = bme_ok;
     } else {
-        data->temp = NAN;
-        data->pressure = NAN;
-        data->humidity = NAN;
+        data->temp = NAN; data->pressure = NAN; data->humidity = NAN;
     }
 
-    // 3. VEML7700
+    // VEML7700
     if (s_has_veml7700) {
         double lux_val = 0.0;
         bool veml_ok = false;
+        // W trybie PSM odczyt może chwilę trwać lub zwrócić ostatnią wartość.
+        // Auto-adjust gain może wybudzić czujnik na dłużej, ale jest potrzebny dla dokładności.
         veml7700_auto_adjust_gain(&veml_sensor);
         if (veml7700_read_lux(&veml_sensor, &lux_val) == ESP_OK) {
             data->light_lux = (float)lux_val;
@@ -287,27 +289,14 @@ void sensors_read(telemetry_data_t *data) {
         } else {
             data->light_lux = NAN;
         }
-
-        if (veml_ok && !s_prev_veml_ok) {
-            if (alert_limiter_allow("sensor.veml7700_recovered", esp_log_timestamp(), 60 * 1000, NULL)) {
-                mqtt_app_send_alert2("sensor.veml7700_recovered", "info", "sensor", "VEML7700 recovered");
-            }
-        } else if (!veml_ok && s_prev_veml_ok) {
-            uint32_t suppressed = 0;
-            if (alert_limiter_allow("sensor.veml7700_read_failed", esp_log_timestamp(), 5 * 60 * 1000, &suppressed)) {
-                char details[96];
-                snprintf(details, sizeof(details), "{\"suppressed\":%lu}", (unsigned long)suppressed);
-                mqtt_app_send_alert2_details("sensor.veml7700_read_failed", "warning", "sensor", "VEML7700 read failed", details);
-            }
-        }
         s_prev_veml_ok = veml_ok;
     } else {
         data->light_lux = NAN;
     }
 
-    // 4. Woda
+    // Woda 
     int w_val = 0;
-    sensors_get_water_status(&w_val);
+    sensors_get_water_status(&w_val); // zarządzanie Pull-Upem
     data->water_ok = (int16_t)w_val;
     
     // 5. Timestamp
