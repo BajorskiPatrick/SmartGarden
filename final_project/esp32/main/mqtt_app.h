@@ -38,4 +38,7 @@ void mqtt_app_send_alert2(const char* code, const char* severity, const char* su
 // `details_json` powinien być JSON-em typu object (np. {"reason":201,"suppressed":3}), albo NULL.
 void mqtt_app_send_alert2_details(const char* code, const char* severity, const char* subsystem, const char* message, const char* details_json);
 
+// Publikuje wiadomość na podścieżkę (np. "settings/state") względem garden/{user}/{device}/...
+void mqtt_app_publish_to_subpath(const char* subpath, const char* data, int qos);
+
 #endif // MQTT_APP_H

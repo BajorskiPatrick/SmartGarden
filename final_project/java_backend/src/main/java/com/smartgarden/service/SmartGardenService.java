@@ -34,6 +34,9 @@ public class SmartGardenService {
     private final ObjectMapper objectMapper;
     private final MqttGateway mqttGateway;
 
+    // Map<MacAddress, Future> for async settings retrieval
+    private final java.util.Map<String, java.util.concurrent.CompletableFuture<DeviceSettingsDto>> pendingSettingsRequests = new java.util.concurrent.ConcurrentHashMap<>();
+
     /**
      * Process incoming telemetry JSON.
      */
@@ -114,19 +117,6 @@ public class SmartGardenService {
                 alert.setTimestamp(LocalDateTime.now());
             }
 
-            // Known Alert Codes from ESP32:
-            // - temperature_low, temperature_high
-            // - humidity_low, humidity_high
-            // - soil_moisture_low, soil_moisture_high
-            // - light_low, light_high
-            // - water_level_critical (CRITICAL)
-            // - provisioning.timeout, provisioning.incomplete, provisioning.save_failed
-            // - wifi.disconnected, wifi.got_ip
-            // - system.factory_reset
-            // - sensor.*_recovered, sensor.*_read_failed
-            // - connection.mqtt_connected, connection.mqtt_disconnected,
-            // connection.mqtt_error
-            // - command.watering_started, command.watering_finished
             if (root.has("code"))
                 alert.setCode(root.get("code").asText());
             if (root.has("severity"))
@@ -169,7 +159,6 @@ public class SmartGardenService {
     }
 
     public void sendWaterCommand(String mac, Integer duration) {
-        // Topic: garden/{user}/{device}/command/water
         Device device = getOrCreateDevice(mac, "unknown_user");
         String topic = String.format("garden/%s/%s/command/water", device.getUserId(), mac);
 
@@ -177,14 +166,6 @@ public class SmartGardenService {
         if (duration != null && duration > 0) {
             payload = String.format("{\"duration\": %d}", duration);
         } else {
-            // Sending empty JSON or default duration?
-            // If we send empty {}, ESP32 uses its configured default.
-            // If we send explicitly "duration": 5, it overrides.
-            // Let's send empty to let ESP32 decide based on its settings,
-            // OR fetch settings here and send them?
-            // ESP32 logic: "int duration = settings.watering_duration_sec; ... if
-            // (cJSON_IsNumber(d)) duration = d->valueint;"
-            // So sending {} triggers default.
             payload = "{}";
         }
 
@@ -192,130 +173,71 @@ public class SmartGardenService {
         log.info("Sent WATER command to {} with duration {}", topic, duration);
     }
 
+    // --- Device Authoritative Settings Implementation ---
+
     public DeviceSettingsDto getDeviceSettings(String mac) {
-        Device settingsDevice = getOrCreateDevice(mac, "unknown");
-        return deviceSettingsRepository.findByDevice_MacAddress(mac)
-                .map(this::mapToDto)
-                .orElseGet(() -> {
-                    // Create defaults if not exists
-                    DeviceSettings defaults = new DeviceSettings();
-                    defaults.setDevice(settingsDevice);
-                    defaults.setWateringDurationSeconds(5); // Default 5s
-                    defaults.setMeasurementIntervalSeconds(60); // Default 60s
-                    deviceSettingsRepository.save(defaults);
-                    return mapToDto(defaults);
-                });
+        // 1. Send GET request via MQTT
+        Device device = getOrCreateDevice(mac, "unknown");
+        String topic = String.format("garden/%s/%s/settings/get", device.getUserId(), mac);
+        mqttGateway.sendToMqtt("{}", topic);
+        log.info("Requested settings for device {}", mac);
+
+        // 2. Wait for response (async)
+        java.util.concurrent.CompletableFuture<DeviceSettingsDto> future = new java.util.concurrent.CompletableFuture<>();
+        pendingSettingsRequests.put(mac, future);
+
+        try {
+            // Wait up to 5 seconds for response
+            return future.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.error("Timeout or error waiting for device settings for {}: {}", mac, e.getMessage());
+            pendingSettingsRequests.remove(mac);
+            // Return empty settings (defaults) or indicate error.
+            // Returning empty DTO prevents null pointer exceptions in callers.
+            return new DeviceSettingsDto();
+        }
+    }
+
+    /**
+     * Callback method called by MqttInputHandler when a settings/state message
+     * arrives.
+     */
+    public void processSettingsState(String mac, String payload) {
+        try {
+            // Parse payload directly to DTO
+            DeviceSettingsDto dto = objectMapper.readValue(payload, DeviceSettingsDto.class);
+
+            // Complete the pending future if exists
+            java.util.concurrent.CompletableFuture<DeviceSettingsDto> future = pendingSettingsRequests.remove(mac);
+            if (future != null) {
+                future.complete(dto);
+            } else {
+                log.debug("Received settings state for {} but no pending request (or timed out).", mac);
+            }
+        } catch (JsonProcessingException e) {
+            log.error("Failed to parse settings state payload for " + mac, e);
+        }
     }
 
     public void updateDeviceSettings(String mac, DeviceSettingsDto dto) {
         Device device = getOrCreateDevice(mac, "unknown");
-        DeviceSettings settings = deviceSettingsRepository.findByDevice_MacAddress(mac)
-                .orElse(new DeviceSettings());
-        settings.setDevice(device);
 
-        // Update fields if present
-        if (dto.getTempMin() != null)
-            settings.setTempMin(dto.getTempMin());
-        if (dto.getTempMax() != null)
-            settings.setTempMax(dto.getTempMax());
-        if (dto.getHumMin() != null)
-            settings.setHumMin(dto.getHumMin());
-        if (dto.getHumMax() != null)
-            settings.setHumMax(dto.getHumMax());
-        if (dto.getSoilMin() != null)
-            settings.setSoilMin(dto.getSoilMin());
-        if (dto.getSoilMax() != null)
-            settings.setSoilMax(dto.getSoilMax());
-        if (dto.getLightMin() != null)
-            settings.setLightMin(dto.getLightMin());
-        if (dto.getLightMax() != null)
-            settings.setLightMax(dto.getLightMax());
-
-        if (dto.getWateringDurationSeconds() != null)
-            settings.setWateringDurationSeconds(dto.getWateringDurationSeconds());
-
-        if (dto.getMeasurementIntervalSeconds() != null)
-            settings.setMeasurementIntervalSeconds(dto.getMeasurementIntervalSeconds());
-
-        deviceSettingsRepository.save(settings);
-
-        // Publish to MQTT
+        // Publish to MQTT directly (No DB Save)
         try {
-            // Map Entity to DTO (which has JSON annotations) to send proper JSON
-            DeviceSettingsDto fullDto = mapToDto(settings);
-            String payload = objectMapper.writeValueAsString(fullDto);
+            String payload = objectMapper.writeValueAsString(dto);
             String topic = String.format("garden/%s/%s/settings", device.getUserId(), mac);
             mqttGateway.sendToMqtt(payload, topic);
             log.info("Published updated settings to {}", topic);
         } catch (JsonProcessingException e) {
-            log.error("Failed to allow msg", e);
+            log.error("Failed to serialize settings DTO", e);
         }
     }
 
     public void resetDeviceSettings(String mac) {
-        // Defaults:
-        // Temp/Hum/Light: Infinite (nulls/doubles) -> we set nulls in DTO to signify
-        // "no limit"
-        // But for updateDeviceSettings logic, we want to OVERWRITE existing values with
-        // defaults.
-        // So we need a DTO that has explicit default values.
-
-        DeviceSettingsDto defaults = new DeviceSettingsDto();
-
-        // Use "impossible" values to effectively disable checks or use defaults
-        // Backend entity uses Float/Int.
-        // Logic in ESP32: valid if min <= max.
-        // To "disable" limits: min = -Inf, max = Inf.
-        // Java Double.NEGATIVE_INFINITY translates to JSON specific handling or "null"
-        // if not supported?
-        // Jackson supports Infinity. Let's see if ESP32 cJSON supports it. cJSON might
-        // not parse "Infinity".
-        // ESP32 code: .temp_min = -INFINITY.
-        // If we send null in JSON, our update logic IGNORES it (keeps old value).
-        // So we must send explicit values.
-
-        // Let's explicitly set these to "safe" wide ranges.
-        defaults.setTempMin(-100.0f);
-        defaults.setTempMax(100.0f);
-        defaults.setHumMin(0.0f);
-        defaults.setHumMax(100.0f);
-        defaults.setSoilMin(0);
-        defaults.setSoilMax(100);
-        defaults.setLightMin(0.0f);
-        defaults.setLightMax(1000000.0f);
-
-        defaults.setWateringDurationSeconds(5);
-        defaults.setMeasurementIntervalSeconds(60);
-
-        updateDeviceSettings(mac, defaults);
-        log.info("Reset settings for device {} to defaults.", mac);
-        updateDeviceSettings(mac, defaults);
-        log.info("Reset settings for device {} to defaults.", mac);
-    }
-
-    private DeviceSettingsDto mapToDto(DeviceSettings s) {
-        DeviceSettingsDto dto = new DeviceSettingsDto();
-        dto.setTempMin(s.getTempMin());
-        dto.setTempMax(s.getTempMax());
-        dto.setHumMin(s.getHumMin());
-        dto.setHumMax(s.getHumMax());
-        dto.setSoilMin(s.getSoilMin());
-        dto.setSoilMax(s.getSoilMax());
-        dto.setLightMin(s.getLightMin());
-        dto.setLightMax(s.getLightMax());
-        dto.setWateringDurationSeconds(s.getWateringDurationSeconds() != null ? s.getWateringDurationSeconds() : 5);
-        dto.setMeasurementIntervalSeconds(
-                s.getMeasurementIntervalSeconds() != null ? s.getMeasurementIntervalSeconds() : 60);
-        return dto;
-    }
-
-    private String buildThresholdsJson(DeviceSettings s) {
-        try {
-            return objectMapper.writeValueAsString(mapToDto(s));
-        } catch (JsonProcessingException e) {
-            log.error("Failed to serialize thresholds", e);
-            return "{}";
-        }
+        Device device = getOrCreateDevice(mac, "unknown");
+        String topic = String.format("garden/%s/%s/settings/reset", device.getUserId(), mac);
+        mqttGateway.sendToMqtt("{}", topic);
+        log.info("Sent settings/reset command to device {}", mac);
     }
 
     private Device getOrCreateDevice(String mac, String userId) {

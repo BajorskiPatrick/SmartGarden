@@ -80,11 +80,11 @@ static bool alert_light_high_so_far = false;
 static bool alert_water_so_far = false;
 
 static bool value_available_float(float v) {
-    return !isnan(v);
+    return !isnan(v) && !isinf(v);
 }
 
 static bool value_available_soil(int v) {
-    return v >= 0;
+    return v != INT_MIN && v != INT_MAX;
 }
 
 static void save_settings_to_nvs(void) {
@@ -316,6 +316,31 @@ static void perform_watering(int duration, const char* source) {
     }
 }
 
+void publish_settings(void) {
+    if (!mqtt_app_is_connected()) return;
+
+    cJSON *root = cJSON_CreateObject();
+    if (value_available_float(settings.temp_min)) cJSON_AddNumberToObject(root, "temp_min", settings.temp_min);
+    if (value_available_float(settings.temp_max)) cJSON_AddNumberToObject(root, "temp_max", settings.temp_max);
+    if (value_available_float(settings.hum_min)) cJSON_AddNumberToObject(root, "hum_min", settings.hum_min);
+    if (value_available_float(settings.hum_max)) cJSON_AddNumberToObject(root, "hum_max", settings.hum_max);
+    if (value_available_soil(settings.soil_min)) cJSON_AddNumberToObject(root, "soil_min", settings.soil_min);
+    if (value_available_soil(settings.soil_max)) cJSON_AddNumberToObject(root, "soil_max", settings.soil_max);
+    if (value_available_float(settings.light_min)) cJSON_AddNumberToObject(root, "light_min", settings.light_min);
+    if (value_available_float(settings.light_max)) cJSON_AddNumberToObject(root, "light_max", settings.light_max);
+    
+    cJSON_AddNumberToObject(root, "watering_duration_sec", settings.watering_duration_sec);
+    cJSON_AddNumberToObject(root, "measurement_interval_sec", settings.measurement_interval_sec);
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    if (json_str) {
+        // Publish to .../settings/state
+        mqtt_app_publish_to_subpath("settings/state", json_str, 0); 
+        free(json_str);
+    }
+    cJSON_Delete(root);
+}
+
 void process_incoming_data(const char *topic, const char *payload, int len) {
     // Sprawdzenie czy to komenda czy progi
     if (strstr(topic, "/command/water")) {
@@ -377,6 +402,28 @@ void process_incoming_data(const char *topic, const char *payload, int len) {
         mqtt_app_send_telemetry_masked(&data, mask);
 
         if (root) cJSON_Delete(root);
+    }
+    else if (strstr(topic, "/settings/reset")) {
+        ESP_LOGI(TAG, "Odebrano komendę RESET ustawień.");
+        // Przywrócenie domyślnych
+        settings.temp_min = -INFINITY;
+        settings.temp_max = INFINITY;
+        settings.hum_min = -INFINITY;
+        settings.hum_max = INFINITY;
+        settings.soil_min = INT_MIN;
+        settings.soil_max = INT_MAX;
+        settings.light_min = -INFINITY;
+        settings.light_max = INFINITY;
+        settings.watering_duration_sec = 5;
+        settings.measurement_interval_sec = 60;
+        
+        save_settings_to_nvs();
+        ESP_LOGI(TAG, "Ustawienia zresetowane do domyślnych.");
+        publish_settings();
+    }
+    else if (strstr(topic, "/settings/get")) {
+        ESP_LOGI(TAG, "Odebrano żądanie GET ustawień.");
+        publish_settings();
     }
     else if (strstr(topic, "/settings")) {
         ESP_LOGI(TAG, "Odebrano nowe ustawienia: %s", payload);
@@ -492,17 +539,9 @@ void process_incoming_data(const char *topic, const char *payload, int len) {
                 }
             } else {
                 settings = new_set;
-                ESP_LOGI(TAG, "Zaktualizowano ustawienia. Water: %ds, Interval: %ds\n"
-                         "    Temp: %.1f .. %.1f\n"
-                         "    Hum:  %.1f .. %.1f\n"
-                         "    Soil: %d .. %d\n"
-                         "    Light: %.1f .. %.1f", 
-                         settings.watering_duration_sec, settings.measurement_interval_sec,
-                         settings.temp_min, settings.temp_max,
-                         settings.hum_min, settings.hum_max,
-                         settings.soil_min, settings.soil_max,
-                         settings.light_min, settings.light_max);
+                ESP_LOGI(TAG, "Zaktualizowano ustawienia.");
                 save_settings_to_nvs();
+                publish_settings(); // send back new state
             }
             cJSON_Delete(root);
         } else {
