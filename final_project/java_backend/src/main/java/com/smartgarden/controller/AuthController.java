@@ -1,4 +1,4 @@
-package com.smartgarden.controller;
+    package com.smartgarden.controller;
 
 import com.smartgarden.config.JwtUtils;
 import com.smartgarden.entity.AppUser;
@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/api/auth")
 @RequiredArgsConstructor
+@CrossOrigin(origins = "*")
 public class AuthController {
 
     private final AuthenticationManager authenticationManager;

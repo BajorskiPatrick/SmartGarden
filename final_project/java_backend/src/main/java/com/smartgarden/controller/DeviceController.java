@@ -29,7 +29,8 @@ public class DeviceController {
 
     @GetMapping
     public List<Device> getAllDevices() {
-        return deviceRepository.findAll();
+        String username = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication().getName();
+        return deviceRepository.findByUserId(username);
     }
 
     @GetMapping("/{mac}")

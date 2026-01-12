@@ -23,8 +23,8 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ./mosquitto/config/mosquitto.conf:/etc/mosquitto/mosquitto.conf
-      - ./mosquitto/data:/mosquitto/data
+      - ./java_backend/mosquitto/config/mosquitto.conf:/etc/mosquitto/mosquitto.conf
+      - ./java_backend/mosquitto/data:/mosquitto/data
 
   postgres:
     image: postgres:17
@@ -45,7 +45,7 @@ services:
 
   backend:
     build:
-      context: .
+      context: ./java_backend
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
@@ -61,6 +61,16 @@ services:
       MQTT_BROKER_URL: tcp://mosquitto:1883
     ports:
       - "8080:8080"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
 
 volumes:
   postgres_data:
