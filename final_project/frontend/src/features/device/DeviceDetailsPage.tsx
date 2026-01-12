@@ -7,6 +7,8 @@ import { TelemetryChart } from './TelemetryChart';
 import { ControlPanel } from './ControlPanel';
 import { ArrowLeft, Loader2, Wifi, WifiOff } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { useTelemetryWebSocket } from '../../hooks/useTelemetryWebSocket';
+import { useEffect, useState } from 'react';
 
 export function DeviceDetailsPage() {
   const { mac } = useParams<{ mac: string }>();
@@ -29,8 +31,36 @@ export function DeviceDetailsPage() {
       return response.data.content; // Spring Page response
     },
     enabled: !!mac,
-    refetchInterval: 5000, // Live updates
+    refetchInterval: false, // Disable polling, use WebSocket
   });
+
+  const liveMeasurement = useTelemetryWebSocket(mac || '');
+  const [displayData, setDisplayData] = useState<Measurement[]>([]);
+
+  // Sync with initial load
+  useEffect(() => {
+    if (telemetry) {
+      setDisplayData(telemetry);
+    }
+  }, [telemetry]);
+
+  // Merge live updates
+  useEffect(() => {
+    if (liveMeasurement) {
+      setDisplayData(prev => {
+        // Avoid duplicates if reusing timestamps, or just prepend
+        // Convert partial liveMeasurement to full Measurement if needed
+        // For now, assuming liveMeasurement matches enough of Measurement structure
+        const newMeasurement = {
+          ...liveMeasurement,
+           // Ensure defaults if missing from WS
+           device: { macAddress: mac },
+        } as unknown as Measurement; 
+        
+        return [newMeasurement, ...prev];
+      });
+    }
+  }, [liveMeasurement, mac]);
 
   if (isLoadingDevice || !device) {
     return (
@@ -70,7 +100,7 @@ export function DeviceDetailsPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2">
-          {telemetry && <TelemetryChart data={telemetry} />}
+           <TelemetryChart data={displayData} />
         </div>
         <div>
           <ControlPanel macAddress={device.macAddress} />

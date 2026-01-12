@@ -13,7 +13,9 @@ import com.smartgarden.repository.AlertRepository;
 import com.smartgarden.repository.DeviceRepository;
 import com.smartgarden.repository.DeviceSettingsRepository;
 import com.smartgarden.repository.MeasurementRepository;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j; // Add this if logging is needed, or just standard logger
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,6 +33,7 @@ public class SmartGardenService {
     private final MeasurementRepository measurementRepository;
     private final AlertRepository alertRepository;
     private final DeviceSettingsRepository deviceSettingsRepository;
+    private final SimpMessagingTemplate messagingTemplate;
     private final ObjectMapper objectMapper;
     private final MqttGateway mqttGateway;
 
@@ -86,6 +89,24 @@ public class SmartGardenService {
             }
 
             measurementRepository.save(measurement);
+            
+            // Broadcast telemetry to WebSocket topic
+            // We need to map Entity to DTO or send a custom object. 
+            // For simplicity, let's create a map or modify Measurement entity to be serializable safely? 
+            // Measurement entity has Circular ref (device). 
+            // Better to send a quick DTO.
+            
+            java.util.Map<String, Object> telemetryUpdate = new java.util.HashMap<>();
+            telemetryUpdate.put("timestamp", measurement.getTimestamp().toString());
+            telemetryUpdate.put("soilMoisture", measurement.getSoilMoisture());
+            telemetryUpdate.put("temperature", measurement.getTemperature());
+            telemetryUpdate.put("humidity", measurement.getHumidity());
+            telemetryUpdate.put("pressure", measurement.getPressure());
+            telemetryUpdate.put("lightLux", measurement.getLightLux());
+            telemetryUpdate.put("waterTankOk", measurement.getWaterTankOk());
+            
+            messagingTemplate.convertAndSend("/topic/device/" + mac + "/telemetry", telemetryUpdate);
+            
             log.info("Saved telemetry for device: {}", mac);
 
         } catch (JsonProcessingException e) {
