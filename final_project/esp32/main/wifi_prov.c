@@ -48,6 +48,7 @@ RTC_NOINIT_ATTR static uint32_t s_factory_reset_marker = 0;
 #define CHAR_MQTT_PASS_UUID 0xFF06
 #define CHAR_USER_ID_UUID   0xFF07
 #define CHAR_DEVICE_ID_UUID 0xFF08
+#define CHAR_AUTH_UUID      0xFF09
 
 // --- NVS Keys ---
 #define NVS_NAMESPACE "wifi_config"
@@ -64,8 +65,11 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 
 static uint16_t ssid_handle, pass_handle, ctrl_handle;
-static uint16_t broker_handle, mqtt_login_handle, mqtt_pass_handle, user_id_handle, device_id_handle;
+static uint16_t broker_handle, mqtt_login_handle, mqtt_pass_handle, user_id_handle, device_id_handle, auth_handle;
+static uint16_t auth_cccd_handle; // Store CCCD handle
 static bool restart_pending = false;
+static bool s_is_authorized = false;
+static esp_gatt_if_t s_gatts_if = ESP_GATT_IF_NONE; // Store GATT interface
 
 static char temp_ssid[32] = {0};
 static char temp_pass[64] = {0};
@@ -479,6 +483,7 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
 static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param) {
     switch (event) {
     case ESP_GATTS_REG_EVT: {
+        s_gatts_if = gatts_if;
         esp_ble_gap_set_device_name("SMART_GARDEN_PROV");
         esp_ble_gap_config_adv_data(&adv_data);
 
@@ -556,6 +561,13 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                                ESP_GATT_PERM_READ,
                                ESP_GATT_CHAR_PROP_BIT_READ,
                                NULL, NULL);
+
+        // AUTH (READ + NOTIFY)
+        char_uuid.uuid.uuid16 = CHAR_AUTH_UUID;
+        esp_ble_gatts_add_char(service_handle, &char_uuid,
+                               ESP_GATT_PERM_READ,
+                               ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY,
+                               NULL, NULL);
         break;
     }
     case ESP_GATTS_ADD_CHAR_EVT: {
@@ -568,6 +580,29 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         else if (uuid == CHAR_MQTT_PASS_UUID) mqtt_pass_handle = param->add_char.attr_handle;
         else if (uuid == CHAR_USER_ID_UUID) user_id_handle = param->add_char.attr_handle;
         else if (uuid == CHAR_DEVICE_ID_UUID) device_id_handle = param->add_char.attr_handle;
+        else if (uuid == CHAR_AUTH_UUID) {
+            auth_handle = param->add_char.attr_handle;
+            // Add CCCD (Client Characteristic Configuration Descriptor) for Notify
+            esp_bt_uuid_t descr_uuid;
+            descr_uuid.len = ESP_UUID_LEN_16;
+            descr_uuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG; // 0x2902
+            
+            esp_ble_gatts_add_char_descr(
+                param->add_char.service_handle,
+                &descr_uuid,
+                ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+                NULL,
+                NULL
+            );
+        }
+        break;
+    }
+
+    case ESP_GATTS_ADD_CHAR_DESCR_EVT: {
+        if (param->add_char_descr.descr_uuid.uuid.uuid16 == ESP_GATT_UUID_CHAR_CLIENT_CONFIG) {
+            auth_cccd_handle = param->add_char_descr.attr_handle;
+            ESP_LOGI(LOG_TAG, "AUTH CCCD added, handle = %d", auth_cccd_handle);
+        }
         break;
     }
 
@@ -576,6 +611,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         if (param->read.handle == ssid_handle) which = "ssid";
         else if (param->read.handle == broker_handle) which = "broker_uri";
         else if (param->read.handle == device_id_handle) which = "device_id";
+        else if (param->read.handle == auth_handle) which = "auth_status";
 
         ESP_LOGI(LOG_TAG, "BLE READ: %s (handle=0x%04x, conn_id=%d)", which, param->read.handle, param->read.conn_id);
 
@@ -606,6 +642,10 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             if (vlen > (sizeof(rsp.attr_value.value))) vlen = sizeof(rsp.attr_value.value);
             rsp.attr_value.len = (uint16_t)vlen;
             memcpy(rsp.attr_value.value, dev_id, vlen);
+        } else if (param->read.handle == auth_handle) {
+            uint8_t val = s_is_authorized ? 1 : 0;
+            rsp.attr_value.len = 1;
+            rsp.attr_value.value[0] = val;
         } else {
             rsp.attr_value.len = 0;
         }
@@ -626,7 +666,9 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                  param->connect.conn_id, ESP_BD_ADDR_HEX(param->connect.remote_bda));
         ble_client_connected = true;
         ble_adv_active = false; // advertising zwykle przestaje działać po zestawieniu połączenia
+        ble_adv_active = false; // advertising zwykle przestaje działać po zestawieniu połączenia
         stop_prov_timeout();
+        s_is_authorized = false; // Reset auth on new connection
         log_ble_state("connect_evt");
         break;
 
@@ -671,6 +713,33 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         break;
 
     case ESP_GATTS_WRITE_EVT: {
+        // Handle CCCD Write (Enable Notifications)
+        if (param->write.handle == auth_cccd_handle) {
+             if (param->write.len == 2) {
+                 uint16_t descr_value = param->write.value[1] << 8 | param->write.value[0];
+                 ESP_LOGI(LOG_TAG, "Auth CCCD write: 0x%04x", descr_value);
+             }
+             if (param->write.need_rsp) {
+                 esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
+             }
+             return;
+        }
+
+        if (!s_is_authorized && 
+           (param->write.handle == ssid_handle || 
+            param->write.handle == pass_handle || 
+            param->write.handle == broker_handle || 
+            param->write.handle == mqtt_login_handle || 
+            param->write.handle == mqtt_pass_handle || 
+            param->write.handle == user_id_handle)) 
+        {
+             ESP_LOGW(LOG_TAG, "Write attempt blocked: Not authorized (Press BOOT button first)");
+             if (param->write.need_rsp) {
+                 esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_WRITE_NOT_PERMIT, NULL);
+             }
+             break;
+        }
+
         if (param->write.handle == ssid_handle) {
             memset(temp_ssid, 0, sizeof(temp_ssid));
             size_t len = (param->write.len < sizeof(temp_ssid)-1) ? param->write.len : sizeof(temp_ssid)-1;
@@ -690,6 +759,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             size_t len = (param->write.len < sizeof(temp_broker)-1) ? param->write.len : sizeof(temp_broker)-1;
             memcpy(temp_broker, param->write.value, len);
             ESP_LOGI(LOG_TAG, "BROKER rcv: %s", temp_broker);
+            ESP_LOG_BUFFER_HEX(LOG_TAG, temp_broker, len);
             broker_dirty = true;
         }
         else if (param->write.handle == mqtt_login_handle) {
@@ -848,13 +918,23 @@ static void button_task(void *pvParameter) {
             // Short Click
             int64_t press_ms = (esp_timer_get_time() - start_us) / 1000;
             if (press_ms < BUTTON_HOLD_RESET_MS) {
-                ESP_LOGI(LOG_TAG, "Click -> Start/Restart Config Window (always).");
-                log_ble_state("button_click");
-                if (s_prov_ctrl_task_handle) {
-                    xTaskNotifyGive(s_prov_ctrl_task_handle);
+                if (ble_client_connected) {
+                    // If connected, short click means "Authorize"
+                    ESP_LOGI(LOG_TAG, "Click -> Authorizing connected client...");
+                    s_is_authorized = true;
+                    
+                    // Notify client
+                    uint8_t notify_data = 1;
+                    esp_ble_gatts_send_indicate(s_gatts_if, s_ble_conn_id, auth_handle, 1, &notify_data, false);
                 } else {
-                    // Fallback jeśli task nie wystartował
-                    start_provisioning_window();
+                    ESP_LOGI(LOG_TAG, "Click -> Start/Restart Config Window.");
+                    log_ble_state("button_click");
+                    if (s_prov_ctrl_task_handle) {
+                        xTaskNotifyGive(s_prov_ctrl_task_handle);
+                    } else {
+                        // Fallback jeśli task nie wystartował
+                        start_provisioning_window();
+                    }
                 }
             }
             vTaskDelay(pdMS_TO_TICKS(500)); // debounce

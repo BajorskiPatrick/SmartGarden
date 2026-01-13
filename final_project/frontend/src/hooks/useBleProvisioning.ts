@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 
 // UUIDs matching wifi_prov.c
 const SERVICE_UUID = '12345678-90ab-cdef-1234-567890abcdef';
@@ -14,6 +14,8 @@ const UUIDS = {
     MQTT_LOGIN: `${BASE_UUID_PREFIX}ff05${BASE_UUID_SUFFIX}`,
     MQTT_PASS: `${BASE_UUID_PREFIX}ff06${BASE_UUID_SUFFIX}`,
     USER_ID: `${BASE_UUID_PREFIX}ff07${BASE_UUID_SUFFIX}`,
+    DEVICE_ID_MAC: `${BASE_UUID_PREFIX}ff08${BASE_UUID_SUFFIX}`,
+    AUTH: `${BASE_UUID_PREFIX}ff09${BASE_UUID_SUFFIX}`,
 };
 
 interface ProvisioningData {
@@ -29,11 +31,121 @@ export function useBleProvisioning() {
     const [isProvisioning, setIsProvisioning] = useState(false);
     const [provisioningError, setProvisioningError] = useState<string | null>(null);
     const [progress, setProgress] = useState<string>('');
+    const [isConnected, setIsConnected] = useState(false);
+
+    // Store service reference to reuse between steps
+    const serviceRef = useRef<any>(null);
+    const deviceRef = useRef<any>(null);
+
+    const connectAndGetMac = async (): Promise<string> => {
+        setIsProvisioning(true);
+        setProvisioningError(null);
+        setProgress('Searching for device...');
+
+        try {
+            const SERVICE_UUID_REV = 'efcdab90-7856-3412-efcd-ab9078563412';
+
+            // @ts-ignore - Web Bluetooth types might be missing
+            const device = await navigator.bluetooth.requestDevice({
+                filters: [{ namePrefix: 'SMART_GARDEN_PROV' }],
+                optionalServices: [SERVICE_UUID, SERVICE_UUID_REV]
+            });
+
+            deviceRef.current = device;
+
+            device.addEventListener('gattserverdisconnected', () => {
+                console.log('Device disconnected');
+                setIsConnected(false);
+                serviceRef.current = null;
+            });
+
+            setProgress('Connecting to GATT Server...');
+            if (!device.gatt) {
+                throw new Error('Bluetooth device GATT server not available');
+            }
+            const server = await device.gatt.connect();
+            setIsConnected(true);
+
+            setProgress('Discovering Services...');
+            const services = await server.getPrimaryServices();
+            const service = services.find((s: { uuid: string }) =>
+                s.uuid === SERVICE_UUID || s.uuid === SERVICE_UUID_REV
+            );
+
+            if (!service) {
+                throw new Error(`Service not found. Found: ${services.map((s: { uuid: string }) => s.uuid).join(', ')}`);
+            }
+
+            serviceRef.current = service;
+            console.log('Found Service:', service.uuid);
+
+            // Read MAC Address
+            setProgress('Reading Device Address...');
+            const macChar = await service.getCharacteristic(UUIDS.DEVICE_ID_MAC);
+            const value = await macChar.readValue();
+            const decoder = new TextDecoder('utf-8');
+            const macAddress = decoder.decode(value);
+
+            console.log('Read MAC Address:', macAddress);
+            setProgress('Connected. MAC: ' + macAddress);
+
+            return macAddress;
+
+        } catch (error: any) {
+            console.error('BLE Connection failed:', error);
+            setProvisioningError(error.message || 'Bluetooth connection failed');
+            setIsProvisioning(false);
+            if (deviceRef.current?.gatt?.connected) {
+                deviceRef.current.gatt.disconnect();
+            }
+            throw error;
+        } finally {
+            // If we successfully connected, we stay in "provisioning" state broadly, 
+            // but we might want to flag that the initial connection call is done?
+            // For now keeping isProvisioning=true is okay if the UI handles it, 
+            // but actually we want to return control to UI to fetch credentials.
+            setIsProvisioning(false);
+        }
+    };
+
+    const waitForAuth = async (): Promise<boolean> => {
+        if (!serviceRef.current || !isConnected) {
+            throw new Error('Device not connected.');
+        }
+
+        setProgress('Waiting for device authorization (Press BOOT button)...');
+
+        return new Promise<boolean>(async (resolve, reject) => {
+            try {
+                const service = serviceRef.current;
+                const authChar = await service.getCharacteristic(UUIDS.AUTH);
+
+                const handleCharacteristicValueChanged = (event: any) => {
+                    const value = event.target.value;
+                    const authorized = value.getUint8(0) === 1;
+                    console.log('Auth notification received:', authorized);
+
+                    if (authorized) {
+                        authChar.removeEventListener('characteristicvaluechanged', handleCharacteristicValueChanged);
+                        resolve(true);
+                    }
+                };
+
+                authChar.addEventListener('characteristicvaluechanged', handleCharacteristicValueChanged);
+                await authChar.startNotifications();
+                console.log('Started notifications for Auth characteristic');
+
+            } catch (error: any) {
+                console.error('Failed to setup auth listener:', error);
+                reject(error);
+            }
+        });
+    };
 
     const provisionDevice = async (data: ProvisioningData) => {
         setIsProvisioning(true);
         setProvisioningError(null);
-        setProgress('Searching for device...');
+        setProgress('Starting configuration...');
 
         console.log('[BLE Provisioning] Starting with data:', {
             ssid: data.ssid,
@@ -45,28 +157,11 @@ export function useBleProvisioning() {
         });
 
         try {
-            const SERVICE_UUID_REV = 'efcdab90-7856-3412-efcd-ab9078563412';
-
-            // @ts-ignore - Web Bluetooth types might be missing
-            const device = await navigator.bluetooth.requestDevice({
-                filters: [{ namePrefix: 'SMART_GARDEN_PROV' }],
-                optionalServices: [SERVICE_UUID, SERVICE_UUID_REV]
-            });
-
-            setProgress('Connecting to GATT Server...');
-            const server = await device?.gatt?.connect();
-
-            setProgress('Discovering Services...');
-            const services = await server?.getPrimaryServices();
-            const service = services?.find((s: { uuid: string }) =>
-                s.uuid === SERVICE_UUID || s.uuid === SERVICE_UUID_REV
-            );
-
-            if (!service) {
-                throw new Error(`Service not found. Found: ${services?.map((s: { uuid: string }) => s.uuid).join(', ')}`);
+            if (!serviceRef.current || !isConnected) {
+                throw new Error('Device not connected. Please connect first.');
             }
 
-            console.log('Found Service:', service.uuid);
+            const service = serviceRef.current;
 
             const writeChar = async (uuid: string, value: string, label: string) => {
                 setProgress(`Writing ${label}...`);
@@ -98,20 +193,28 @@ export function useBleProvisioning() {
 
             // Give it a moment before disconnecting
             await new Promise(resolve => setTimeout(resolve, 1000));
-            await device?.gatt?.disconnect();
+            if (deviceRef.current?.gatt?.connected) {
+                await deviceRef.current.gatt.disconnect();
+            }
 
         } catch (error: any) {
             console.error('BLE Provisioning failed:', error);
-            setProvisioningError(error.message || 'Bluetooth connection failed');
-            setProgress('');
+            setProvisioningError(error.message || 'Provisioning failed');
+            setProgress('Failed');
         } finally {
             setIsProvisioning(false);
+            setIsConnected(false);
+            serviceRef.current = null;
+            deviceRef.current = null;
         }
     };
 
     return {
+        connectAndGetMac,
+        waitForAuth,
         provisionDevice,
         isProvisioning,
+        isConnected,
         provisioningError,
         progress
     };

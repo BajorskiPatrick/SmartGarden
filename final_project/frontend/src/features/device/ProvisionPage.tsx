@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Wifi, Smartphone, Check, ArrowRight, Loader2, Copy, Bluetooth } from 'lucide-react';
+import { Wifi, Check, ArrowRight, Loader2, Bluetooth } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../../lib/axios';
 import { useAuth } from '../../context/AuthContext';
@@ -13,62 +13,16 @@ interface MqttCredentials {
 }
 
 export function ProvisionPage() {
-  const [step, setStep] = useState(1);
-  const [macAddress, setMacAddress] = useState('');
   const [wifiSsid, setWifiSsid] = useState('');
   const [wifiPass, setWifiPass] = useState('');
-  
+  const [statusMessage, setStatusMessage] = useState('');
+
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [credentials, setCredentials] = useState<MqttCredentials | null>(null);
+  const [connectedMac, setConnectedMac] = useState<string | null>(null);
 
   const { token } = useAuth();
-  const { provisionDevice, isProvisioning, provisioningError, progress } = useBleProvisioning();
-
-  const handleGenerateCredentials = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setIsLoading(true);
-
-    if (!token) {
-        setError("You are not logged in. Please log in first.");
-        setIsLoading(false);
-        return;
-    }
-
-    try {
-      const response = await api.post<MqttCredentials>(`/provisioning/device?mac=${macAddress}`);
-      setCredentials(response.data);
-      setStep(2); // Move to next step (display credentials)
-    } catch (err: any) {
-      console.error("Provisioning error:", err);
-      const status = err.response?.status;
-      const msg = err.response?.data?.message || err.message;
-      
-      if (status === 403 || status === 401) {
-          setError(`Session expired or unauthorized (${status}). Please log in again.`);
-      } else {
-          setError(`Error ${status || 'unknown'}: ${msg}`);
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-
-
-  const handleBleProvision = async () => {
-      if (!credentials || !wifiSsid) return;
-      
-      await provisionDevice({
-          ssid: wifiSsid,
-          pass: wifiPass,
-          mqtt_login: credentials.mqtt_login,
-          mqtt_pass: credentials.mqtt_password,
-          user_id: credentials.user_id,
-          broker_url: credentials.broker_url
-      });
-  };
+  const { connectAndGetMac, waitForAuth, provisionDevice, isProvisioning, progress } = useBleProvisioning();
 
   return (
     <div className="max-w-4xl mx-auto py-8 px-4">
@@ -77,180 +31,185 @@ export function ProvisionPage() {
           Add New Device
         </h1>
         <p className="text-lg text-gray-600 dark:text-gray-400">
-          Two ways to connect: Automated (Bluetooth) or Manual.
+          Enter your WiFi details and connect to your Smart Garden device.
         </p>
       </div>
 
-      {step === 1 && (
-        <div className="max-w-md mx-auto bg-white dark:bg-gray-800 p-8 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
-           <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">Step 1: Get Credentials & WiFi</h2>
-           
-           <form onSubmit={handleGenerateCredentials}>
-             <div className="mb-4">
-               <label htmlFor="mac" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Device MAC Address</label>
-               <input
-                 type="text"
-                 id="mac"
-                 value={macAddress}
-                 onChange={(e) => setMacAddress(e.target.value.toUpperCase())}
-                 placeholder="78EE4C..."
-                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 dark:bg-gray-700 dark:text-white"
-                 required
-               />
-             </div>
-             
-             <div className="mb-4">
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Your WiFi SSID</label>
-                <input
-                    type="text"
-                    value={wifiSsid}
-                    onChange={(e) => setWifiSsid(e.target.value)}
-                    placeholder="Home_WiFi"
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 dark:bg-gray-700 dark:text-white"
-                />
-                <p className="text-xs text-gray-500 mt-1">Required for Bluetooth provisioning</p>
-             </div>
+      <div className="max-w-md mx-auto bg-white dark:bg-gray-800 p-8 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
 
-             <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Your WiFi Password</label>
-                <input
-                    type="password"
-                    value={wifiPass}
-                    onChange={(e) => setWifiPass(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 dark:bg-gray-700 dark:text-white"
-                />
-             </div>
-             
-             {error && <div className="text-red-500 text-sm mb-4">{error}</div>}
-             
-             <button
-               type="submit"
-               disabled={isLoading}
-               className="w-full bg-green-600 hover:bg-green-700 text-white py-2 rounded-lg font-medium transition-colors flex justify-center items-center"
-             >
-               {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Generate Credentials'}
-             </button>
-           </form>
-        </div>
-      )}
-
-      {step === 2 && credentials && (
-        <div className="space-y-8">
-            
-          {/* Bluetooth Section */}
-          <div className="bg-blue-50 dark:bg-blue-900/20 p-6 rounded-xl border border-blue-200 dark:border-blue-800 max-w-2xl mx-auto text-center">
-             <div className="flex justify-center mb-4">
-                <div className="w-16 h-16 bg-blue-100 dark:bg-blue-800 rounded-full flex items-center justify-center text-blue-600 dark:text-blue-300">
-                    <Bluetooth className="w-8 h-8" />
-                </div>
-             </div>
-             <h2 className="text-2xl font-bold text-blue-900 dark:text-blue-100 mb-2">Automated Setup</h2>
-             <p className="text-blue-700 dark:text-blue-300 mb-6">
-                Make sure your device is plugged in (Blue LED blinking).<br/>
-                Click below to select your device and automatically configure it.
-             </p>
-             
-             {provisioningError && (
-                 <div className="mb-4 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 p-3 rounded">
-                     {provisioningError}
-                 </div>
-             )}
-             
-             {progress && (
-                 <div className="mb-4 text-blue-800 dark:text-blue-300 font-medium animate-pulse">
-                     {progress}
-                 </div>
-             )}
-
-             <button 
-                onClick={handleBleProvision}
-                disabled={isProvisioning || !wifiSsid}
-                className="px-8 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-             >
-                {isProvisioning ? <Loader2 className="w-6 h-6 animate-spin" /> : 'Connect & Provision'}
-             </button>
-             
-             {!wifiSsid && <p className="text-xs text-red-500 mt-2">WiFi SSID required (Go back to Step 1)</p>}
+        {/* Status & Errors */}
+        {error && (
+          <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg text-sm border border-red-200 dark:border-red-800 flex items-start gap-2">
+            <span>⚠️</span>
+            <span>{error}</span>
           </div>
-
-          <div className="relative flex py-5 items-center">
-              <div className="flex-grow border-t border-gray-300 dark:border-gray-700"></div>
-              <span className="flex-shrink-0 mx-4 text-gray-400 uppercase text-sm">Or Manual Setup</span>
-              <div className="flex-grow border-t border-gray-300 dark:border-gray-700"></div>
-          </div>
-
-          {/* Manual Credentials Display */}
-          <div className="bg-gray-50 dark:bg-gray-800 p-6 rounded-xl border border-gray-200 dark:border-gray-700 max-w-2xl mx-auto opacity-75 hover:opacity-100 transition-opacity">
-            <h2 className="text-lg font-bold text-gray-800 dark:text-gray-300 mb-4 flex items-center gap-2">
-              <Check className="w-5 h-5 text-green-500" /> Manual Credentials
-            </h2>
-            <div className="grid gap-2">
-               <div className="bg-white dark:bg-gray-900 p-3 rounded flex justify-between items-center text-sm">
-                 <span className="font-mono">{credentials.mqtt_login}</span>
-                 <button onClick={() => navigator.clipboard.writeText(credentials.mqtt_login)}><Copy className="w-4 h-4 text-gray-400" /></button>
-               </div>
-               <div className="bg-white dark:bg-gray-900 p-3 rounded flex justify-between items-center text-sm">
-                 <span className="font-mono">{credentials.mqtt_password}</span>
-                 <button onClick={() => navigator.clipboard.writeText(credentials.mqtt_password)}><Copy className="w-4 h-4 text-gray-400" /></button>
-               </div>
-               <div className="bg-white dark:bg-gray-900 p-3 rounded flex justify-between items-center text-sm">
-                 <span className="font-mono">{credentials.user_id}</span>
-                 <button onClick={() => navigator.clipboard.writeText(credentials.user_id)}><Copy className="w-4 h-4 text-gray-400" /></button>
-               </div>
-               <div className="bg-white dark:bg-gray-900 p-3 rounded flex justify-between items-center text-sm">
-                 <span className="font-mono">{credentials.broker_url}</span>
-                 <button onClick={() => navigator.clipboard.writeText(credentials.broker_url)}><Copy className="w-4 h-4 text-gray-400" /></button>
-               </div>
-            </div>
-          </div>
-          
-          <div className="grid gap-8 md:grid-cols-2 lg:grid-cols-3 max-w-5xl mx-auto">
-             {/* Instructions for physical setup */}
-             <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
-               <div className="w-10 h-10 bg-blue-100 dark:bg-blue-900/30 rounded-full flex items-center justify-center mb-3 text-blue-600">
-                 <Wifi className="w-5 h-5" />
-               </div>
-               <h3 className="font-semibold mb-2">1. Connect to Device WiFi</h3>
-               <p className="text-sm text-gray-600 dark:text-gray-400">
-                 Connect your phone/laptop to the WiFi network <strong>SmartGarden-Prov</strong>.
-               </p>
-             </div>
-             
-             <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
-               <div className="w-10 h-10 bg-purple-100 dark:bg-purple-900/30 rounded-full flex items-center justify-center mb-3 text-purple-600">
-                 <Smartphone className="w-5 h-5" />
-               </div>
-               <h3 className="font-semibold mb-2">2. Open Configuration</h3>
-               <p className="text-sm text-gray-600 dark:text-gray-400">
-                 Open your browser and navigate to <strong>http://192.168.4.1</strong>.
-               </p>
-             </div>
-             
-             <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
-               <div className="w-10 h-10 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mb-3 text-green-600">
-                 <Check className="w-5 h-5" />
-               </div>
-               <h3 className="font-semibold mb-2">3. Enter Credentials</h3>
-               <p className="text-sm text-gray-600 dark:text-gray-400">
-                 Copy the generated Login, Password, and User ID into the device configuration page.
-               </p>
-             </div>
-          </div>
-        </div>
-      )}
-       
-      <div className="mt-8 text-center flex justify-center gap-4">
-        {step === 2 && (
-            <button 
-                onClick={() => setStep(1)}
-                className="text-gray-500 hover:text-gray-700 underline text-sm"
-            >
-                Generate for another device
-            </button>
         )}
-        <Link to="/" className="text-green-600 hover:text-green-700 font-medium inline-flex items-center gap-2">
-          Back to Dashboard <ArrowRight className="w-4 h-4" />
+
+        {(isProvisioning || isLoading) && (
+          <div className="mb-6 space-y-2">
+            <div className="flex items-center justify-center text-blue-600 dark:text-blue-400">
+              <Loader2 className="w-8 h-8 animate-spin" />
+            </div>
+            <p className="text-center text-sm font-medium text-gray-600 dark:text-gray-300">
+              {progress || statusMessage}
+            </p>
+          </div>
+        )}
+
+        {/* Step 1: Connect Button */}
+        {!connectedMac && (
+          <div className="mb-8">
+            <button
+              onClick={async () => {
+                setError(null);
+                try {
+                  const mac = await connectAndGetMac();
+                  setConnectedMac(mac);
+                } catch (err: any) {
+                  setError(err.message || 'Connection failed');
+                }
+              }}
+              disabled={isProvisioning || isLoading}
+              className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white py-4 rounded-xl font-bold text-lg shadow-lg hover:shadow-xl transition-all flex justify-center items-center gap-2"
+            >
+              <Bluetooth className="w-6 h-6" />
+              {isProvisioning ? 'Connecting...' : 'Step 1: Connect Device'}
+            </button>
+            <p className="mt-2 text-sm text-gray-500 text-center">
+              Make sure your device is powered on and in range.
+            </p>
+          </div>
+        )}
+
+        {/* Step 2: WiFi inputs & Provision (Visible only after connection) */}
+        {connectedMac && (
+          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 rounded-lg flex items-center gap-3">
+              <Bluetooth className="w-5 h-5" />
+              <div className="flex-1">
+                <div className="font-semibold">Connected to Device</div>
+                <div className="text-sm opacity-75">MAC: {connectedMac}</div>
+              </div>
+              <button
+                onClick={() => setConnectedMac(null)}
+                className="text-xs hover:underline opacity-75 hover:opacity-100"
+              >
+                Disconnect
+              </button>
+            </div>
+
+            {/* WiFi Inputs */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">WiFi SSID</label>
+              <input
+                type="text"
+                value={wifiSsid}
+                onChange={(e) => setWifiSsid(e.target.value)}
+                placeholder="Home_WiFi"
+                disabled={isLoading || isProvisioning}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 dark:bg-gray-700 dark:text-white disabled:opacity-50"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">WiFi Password</label>
+              <input
+                type="password"
+                value={wifiPass}
+                onChange={(e) => setWifiPass(e.target.value)}
+                disabled={isLoading || isProvisioning}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 dark:bg-gray-700 dark:text-white disabled:opacity-50"
+              />
+            </div>
+
+            {/* Provision Action */}
+            <button
+              onClick={async () => {
+                setError(null);
+                setIsLoading(true);
+                setStatusMessage('Generating credentials...');
+
+                if (!wifiSsid) {
+                  setError("WiFi SSID is required.");
+                  setIsLoading(false);
+                  return;
+                }
+
+                if (!token) {
+                  setError("You are not logged in. Please log in first.");
+                  setIsLoading(false);
+                  return;
+                }
+
+                try {
+                  // Fetch Credentials from API
+                  const response = await api.post<MqttCredentials>(`/provisioning/device?mac=${connectedMac}`);
+                  const creds = response.data;
+                  // setCredentials(creds); // State removed as unused
+
+                  setStatusMessage('Credentials generated.');
+
+                  // NEW: Wait for Physical Auth
+                  setStatusMessage('Please press the BOOT button on the device to confirm setup...');
+                  await waitForAuth();
+
+                  setStatusMessage('Device Authorized! Configuring...');
+
+                  // Write Configuration
+                  await provisionDevice({
+                    ssid: wifiSsid,
+                    pass: wifiPass,
+                    mqtt_login: creds.mqtt_login,
+                    mqtt_pass: creds.mqtt_password,
+                    user_id: creds.user_id,
+                    broker_url: creds.broker_url
+                  });
+
+                  setStatusMessage('Setup Complete!');
+                  setConnectedMac(null); // Reset for next or done
+                  setWifiSsid('');
+                  setWifiPass('');
+
+                } catch (err: any) {
+                  console.error("Provisioning sequence error:", err);
+                  let msg = err.message || 'Unknown error';
+                  if (err.response) {
+                    msg = err.response.data?.message || `Server error ${err.response.status}`;
+                  }
+                  setError(msg);
+                } finally {
+                  setIsLoading(false);
+                }
+              }}
+              disabled={!wifiSsid || isLoading || isProvisioning}
+              className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white py-4 rounded-xl font-bold text-lg shadow-lg hover:shadow-xl transition-all flex justify-center items-center gap-2"
+            >
+              {isLoading || isProvisioning ? <Loader2 className="w-6 h-6 animate-spin" /> : <Check className="w-6 h-6" />}
+              {isLoading || isProvisioning ? 'Configuring...' : 'Step 2: Configure Device'}
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-8 text-center">
+        <Link to="/" className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300 font-medium inline-flex items-center gap-2">
+          <ArrowRight className="w-4 h-4 rotate-180" /> Back to Dashboard
         </Link>
+      </div>
+
+      <div className="mt-12 grid gap-6 md:grid-cols-3 text-sm text-gray-500 dark:text-gray-400 text-center max-w-3xl mx-auto opacity-75">
+        <div>
+          <Wifi className="w-6 h-6 mx-auto mb-2" />
+          <p>1. Enter WiFi Details</p>
+        </div>
+        <div>
+          <Bluetooth className="w-6 h-6 mx-auto mb-2" />
+          <p>2. Connect via Bluetooth</p>
+        </div>
+        <div>
+          <Check className="w-6 h-6 mx-auto mb-2" />
+          <p>3. Automatic Setup</p>
+        </div>
       </div>
     </div>
   );
