@@ -1,9 +1,13 @@
 import { useState } from 'react';
-import { Wifi, Check, ArrowRight, Loader2, Bluetooth } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Wifi, Check, ArrowRight, Loader2, Bluetooth, Settings, Sprout } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../../lib/axios';
 import { useAuth } from '../../context/AuthContext';
 import { useBleProvisioning } from '../../hooks/useBleProvisioning';
+import { PLANT_PROFILES } from '../../lib/plantProfiles';
+import { ProfileManager } from '../profiles/ProfileManager';
+import { SensorSettingsForm } from './SensorSettingsForm';
+import type { DeviceSettings, PlantProfile } from '../../types';
 
 interface MqttCredentials {
   mqtt_login: string;
@@ -12,9 +16,31 @@ interface MqttCredentials {
   broker_url: string;
 }
 
+const DEFAULT_SETTINGS: DeviceSettings = {
+  temp_min: 0,
+  temp_max: 50,
+  hum_min: 0,
+  hum_max: 100,
+  soil_min: 0,
+  soil_max: 100,
+  light_min: 0,
+  light_max: 100000,
+  watering_duration_sec: 5,
+  measurement_interval_sec: 60,
+  active_profile_name: undefined
+};
+
 export function ProvisionPage() {
+  const navigate = useNavigate();
   const [wifiSsid, setWifiSsid] = useState('');
   const [wifiPass, setWifiPass] = useState('');
+  const [stationName, setStationName] = useState('');
+
+  // Settings State
+  const [settings, setSettings] = useState<DeviceSettings>(DEFAULT_SETTINGS);
+  const [showSettings, setShowSettings] = useState(false);
+  const [activeProfileTab, setActiveProfileTab] = useState<'presets' | 'custom'>('presets');
+
   const [statusMessage, setStatusMessage] = useState('');
 
   const [isLoading, setIsLoading] = useState(false);
@@ -24,6 +50,21 @@ export function ProvisionPage() {
   const { token } = useAuth();
   const { connectAndGetMac, waitForAuth, provisionDevice, isProvisioning, progress } = useBleProvisioning();
 
+  const updateSetting = (key: keyof DeviceSettings, value: number) => {
+    setSettings(prev => ({ ...prev, [key]: value, active_profile_name: undefined })); // Clear profile name on manual edit
+  };
+
+  const applyProfile = (profile: PlantProfile) => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { id, userId, name, description, ...profileSettings } = profile;
+    setSettings(prev => ({
+      ...prev,
+      ...profileSettings,
+      active_profile_name: profile.name
+    }));
+    setShowSettings(true); // Show settings so user can verify
+  };
+
   return (
     <div className="max-w-4xl mx-auto py-8 px-4">
       <div className="text-center mb-12">
@@ -31,11 +72,11 @@ export function ProvisionPage() {
           Add New Device
         </h1>
         <p className="text-lg text-gray-600 dark:text-gray-400">
-          Enter your WiFi details and connect to your Smart Garden device.
+          Enter your WiFi details, configure your station, and connect.
         </p>
       </div>
 
-      <div className="max-w-md mx-auto bg-white dark:bg-gray-800 p-8 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
+      <div className="max-w-2xl mx-auto bg-white dark:bg-gray-800 p-8 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
 
         {/* Status & Errors */}
         {error && (
@@ -81,7 +122,7 @@ export function ProvisionPage() {
           </div>
         )}
 
-        {/* Step 2: WiFi inputs & Provision (Visible only after connection) */}
+        {/* Step 2: Configuration (Visible only after connection) */}
         {connectedMac && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <div className="p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 rounded-lg flex items-center gap-3">
@@ -98,29 +139,112 @@ export function ProvisionPage() {
               </button>
             </div>
 
-            {/* WiFi Inputs */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">WiFi SSID</label>
-              <input
-                type="text"
-                value={wifiSsid}
-                onChange={(e) => setWifiSsid(e.target.value)}
-                placeholder="Home_WiFi"
-                disabled={isLoading || isProvisioning}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 dark:bg-gray-700 dark:text-white disabled:opacity-50"
-              />
+            {/* General Info */}
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Station Name</label>
+                <input
+                  type="text"
+                  value={stationName}
+                  onChange={(e) => setStationName(e.target.value)}
+                  placeholder="e.g. Living Room"
+                  disabled={isLoading || isProvisioning}
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 dark:bg-gray-700 dark:text-white disabled:opacity-50"
+                />
+              </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">WiFi Password</label>
-              <input
-                type="password"
-                value={wifiPass}
-                onChange={(e) => setWifiPass(e.target.value)}
-                disabled={isLoading || isProvisioning}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 dark:bg-gray-700 dark:text-white disabled:opacity-50"
-              />
+            {/* WiFi Inputs */}
+            <h3 className="text-md font-semibold text-gray-900 dark:text-white flex items-center gap-2 mt-4">
+              <Wifi className="w-4 h-4" /> WiFi Connection
+            </h3>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">SSID</label>
+                <input
+                  type="text"
+                  value={wifiSsid}
+                  onChange={(e) => setWifiSsid(e.target.value)}
+                  placeholder="Home_WiFi"
+                  disabled={isLoading || isProvisioning}
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 dark:bg-gray-700 dark:text-white disabled:opacity-50"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Password</label>
+                <input
+                  type="password"
+                  value={wifiPass}
+                  onChange={(e) => setWifiPass(e.target.value)}
+                  disabled={isLoading || isProvisioning}
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-green-500 dark:bg-gray-700 dark:text-white disabled:opacity-50"
+                />
+              </div>
             </div>
+
+            {/* Profile Selection */}
+            <div className="bg-gray-50 dark:bg-gray-900/50 p-4 rounded-xl border border-gray-100 dark:border-gray-800">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wider flex items-center gap-2">
+                  <Sprout className="w-4 h-4" /> Load Profile
+                </h3>
+                <div className="flex bg-gray-200 dark:bg-gray-700 rounded-lg p-1">
+                  <button
+                    onClick={() => setActiveProfileTab('presets')}
+                    className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${activeProfileTab === 'presets' ? 'bg-white dark:bg-gray-600 shadow text-gray-900 dark:text-white' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400'}`}
+                  >
+                    Presets
+                  </button>
+                  <button
+                    onClick={() => setActiveProfileTab('custom')}
+                    className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${activeProfileTab === 'custom' ? 'bg-white dark:bg-gray-600 shadow text-gray-900 dark:text-white' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400'}`}
+                  >
+                    My Profiles
+                  </button>
+                </div>
+              </div>
+
+              {activeProfileTab === 'presets' ? (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {PLANT_PROFILES.map(profile => (
+                    <button
+                      key={profile.id}
+                      onClick={() => applyProfile(profile)}
+                      className={`text-left px-3 py-2 rounded-lg text-sm border transition-all ${settings.active_profile_name === profile.name ? 'bg-green-100 border-green-500 text-green-800 dark:bg-green-900/40 dark:text-green-300' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:border-green-300'}`}
+                    >
+                      <div className="font-medium truncate">{profile.name}</div>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <ProfileManager onSelect={applyProfile} />
+              )}
+              {settings.active_profile_name && (
+                <div className="mt-2 text-xs text-green-600 dark:text-green-400 font-medium">
+                  Active Profile: {settings.active_profile_name}
+                </div>
+              )}
+            </div>
+
+            {/* Advanced Settings Checkbox */}
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowSettings(!showSettings)}
+                className="flex items-center gap-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:text-blue-700"
+              >
+                <Settings className="w-4 h-4" />
+                {showSettings ? 'Hide Sensor Settings' : 'Show Sensor Settings & Verify'}
+              </button>
+            </div>
+
+            {/* Sensor Settings Form */}
+            {showSettings && (
+              <SensorSettingsForm
+                values={settings}
+                onChange={updateSetting}
+              />
+            )}
 
             {/* Provision Action */}
             <button
@@ -141,21 +265,26 @@ export function ProvisionPage() {
                   return;
                 }
 
+                if (!stationName) {
+                  setError("Station Name is required.");
+                  setIsLoading(false);
+                  return;
+                }
+
                 try {
-                  // Fetch Credentials from API
+                  // 1. Fetch Credentials from API
                   const response = await api.post<MqttCredentials>(`/provisioning/device?mac=${connectedMac}`);
                   const creds = response.data;
-                  // setCredentials(creds); // State removed as unused
 
                   setStatusMessage('Credentials generated.');
 
-                  // NEW: Wait for Physical Auth
+                  // 2. Wait for Physical Auth
                   setStatusMessage('Please press the BOOT button on the device to confirm setup...');
                   await waitForAuth();
 
-                  setStatusMessage('Device Authorized! Configuring...');
+                  setStatusMessage('Device Authorized! Configuring WiFi...');
 
-                  // Write Configuration
+                  // 3. Write Configuration (WiFi Only)
                   await provisionDevice({
                     ssid: wifiSsid,
                     pass: wifiPass,
@@ -165,10 +294,43 @@ export function ProvisionPage() {
                     broker_url: creds.broker_url
                   });
 
-                  setStatusMessage('Setup Complete!');
-                  setConnectedMac(null); // Reset for next or done
+                  setStatusMessage('WiFi Configured. Waiting for device to come online...');
+
+                  // 4. Poll for Online Status (Max 60s)
+                  let online = false;
+                  for (let i = 0; i < 30; i++) { // 30 * 2s = 60s
+                    await new Promise(r => setTimeout(r, 2000));
+                    try {
+                      const devRes = await api.get(`/devices/${connectedMac}`);
+                      if (devRes.data && devRes.data.online) {
+                        online = true;
+                        break;
+                      }
+                    } catch (e) {
+                      // Ignore 404/error while booting
+                    }
+                  }
+
+                  if (!online) {
+                    throw new Error("Device did not come online in time. Please check WiFi credentials.");
+                  }
+
+                  setStatusMessage('Device Online. Applying Settings...');
+
+                  // 5. Update Station Name (Backend)
+                  await api.patch(`/devices/${connectedMac}`, { friendlyName: stationName });
+
+                  // 6. Update Sensor Settings (MQTT via Backend)
+                  await api.post(`/devices/${connectedMac}/settings`, settings);
+
+                  setStatusMessage('Setup Complete! Redirecting...');
+                  setConnectedMac(null);
                   setWifiSsid('');
                   setWifiPass('');
+
+                  setTimeout(() => {
+                    navigate('/');
+                  }, 1500);
 
                 } catch (err: any) {
                   console.error("Provisioning sequence error:", err);
@@ -181,11 +343,11 @@ export function ProvisionPage() {
                   setIsLoading(false);
                 }
               }}
-              disabled={!wifiSsid || isLoading || isProvisioning}
+              disabled={!wifiSsid || !stationName || isLoading || isProvisioning}
               className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white py-4 rounded-xl font-bold text-lg shadow-lg hover:shadow-xl transition-all flex justify-center items-center gap-2"
             >
               {isLoading || isProvisioning ? <Loader2 className="w-6 h-6 animate-spin" /> : <Check className="w-6 h-6" />}
-              {isLoading || isProvisioning ? 'Configuring...' : 'Step 2: Configure Device'}
+              {isLoading || isProvisioning ? 'Configuring...' : 'Step 2: Configure & Save'}
             </button>
           </div>
         )}
@@ -195,21 +357,6 @@ export function ProvisionPage() {
         <Link to="/" className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300 font-medium inline-flex items-center gap-2">
           <ArrowRight className="w-4 h-4 rotate-180" /> Back to Dashboard
         </Link>
-      </div>
-
-      <div className="mt-12 grid gap-6 md:grid-cols-3 text-sm text-gray-500 dark:text-gray-400 text-center max-w-3xl mx-auto opacity-75">
-        <div>
-          <Wifi className="w-6 h-6 mx-auto mb-2" />
-          <p>1. Enter WiFi Details</p>
-        </div>
-        <div>
-          <Bluetooth className="w-6 h-6 mx-auto mb-2" />
-          <p>2. Connect via Bluetooth</p>
-        </div>
-        <div>
-          <Check className="w-6 h-6 mx-auto mb-2" />
-          <p>3. Automatic Setup</p>
-        </div>
       </div>
     </div>
   );

@@ -16,7 +16,7 @@ export function DeviceCard({ device, onWater }: DeviceCardProps) {
 
   // Use device.online directly, fallback to false if undefined
   const isOnline = device.online ?? false;
-  
+
   // Listen for real-time updates
   const liveData = useTelemetryWebSocket(device.macAddress);
 
@@ -29,26 +29,26 @@ export function DeviceCard({ device, onWater }: DeviceCardProps) {
     <>
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden hover:shadow-md transition-shadow relative">
         <div className="absolute top-4 right-4 flex gap-2">
-            <button
-                onClick={() => setIsSettingsOpen(true)}
-                className="p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-                title="Settings"
-            >
-                <Settings className="w-5 h-5" />
-            </button>
+          <button
+            onClick={() => setIsSettingsOpen(true)}
+            className="p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            title="Settings"
+          >
+            <Settings className="w-5 h-5" />
+          </button>
         </div>
 
         <div className="p-6">
           <div className="flex justify-between items-start mb-4 pr-10">
             <div>
               <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">
-                {device.name || 'Unnamed Device'}
+                {device.friendlyName || 'Unnamed Device'}
               </h3>
               <p className="text-sm text-gray-500 font-mono">{device.macAddress}</p>
             </div>
           </div>
           <div className="mb-4">
-             <div className={cn(
+            <div className={cn(
               "inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium",
               isOnline ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400" : "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
             )}>
@@ -96,22 +96,22 @@ export function DeviceCard({ device, onWater }: DeviceCardProps) {
               Water
             </button>
           </div>
-          
+
           {/* Active Profile Indicator */}
           {device.activeProfileName && (
-              <div className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700 flex items-center justify-center text-xs text-gray-500">
-                  <Sprout className="w-3 h-3 mr-1 text-green-500" />
-                  Profile: <span className="font-medium text-gray-700 dark:text-gray-300 ml-1">{device.activeProfileName}</span>
-              </div>
+            <div className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700 flex items-center justify-center text-xs text-gray-500">
+              <Sprout className="w-3 h-3 mr-1 text-green-500" />
+              Profile: <span className="font-medium text-gray-700 dark:text-gray-300 ml-1">{device.activeProfileName}</span>
+            </div>
           )}
         </div>
       </div>
-      
-      <DeviceSettingsDialog 
-        macAddress={device.macAddress} 
-        isOpen={isSettingsOpen} 
+
+      <DeviceSettingsDialog
+        macAddress={device.macAddress}
+        isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
-        currentDeviceName={device.name}
+        currentDeviceName={device.friendlyName}
       />
     </>
   );

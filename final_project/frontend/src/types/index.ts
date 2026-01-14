@@ -8,7 +8,7 @@ export interface AuthResponse {
 
 export interface Device {
     id: number;
-    name: string;
+    friendlyName: string; // Renamed from 'name' to match DTO
     macAddress: string;
     status: 'ONLINE' | 'OFFLINE'; // Keep for back-compat if needed, but prefer online
     online: boolean; // Add this
@@ -56,10 +56,10 @@ export interface Alert {
     deviceMac: string;
 }
 
-export interface PlantProfile {
-    id?: string; // Optional for new creations
+export interface PlantProfile extends DeviceSettings {
+    id?: string;
     userId?: string;
     name: string;
     description?: string;
-    settings: Partial<DeviceSettings>;
+    // settings: Partial<DeviceSettings>; // REMOVED: Backend uses flat structure
 }

@@ -50,7 +50,13 @@ public class SmartGardenService {
             String mac = root.get("device").asText();
             String userId = root.has("user") ? root.get("user").asText() : "unknown";
 
-            Device device = getOrCreateDevice(mac, userId);
+            java.util.Optional<Device> deviceOpt = getDeviceIfExists(mac);
+            if (deviceOpt.isEmpty()) {
+                log.debug("Ignored telemetry from unknown device: {}", mac);
+                return;
+            }
+            Device device = deviceOpt.get();
+
             device.setLastSeen(LocalDateTime.now());
             device.setOnline(true);
             deviceRepository.save(device);
@@ -106,6 +112,13 @@ public class SmartGardenService {
             telemetryUpdate.put("waterTankOk", measurement.getWaterTankOk());
             
             messagingTemplate.convertAndSend("/topic/device/" + mac + "/telemetry", telemetryUpdate);
+
+            // Also broadcast to User's private topic for Dashboard updates
+            if (!"unknown".equals(userId)) {
+                // Add device mac to payload for dashboard identification
+                telemetryUpdate.put("macAddress", mac); 
+                messagingTemplate.convertAndSend("/topic/user/" + userId + "/telemetry", telemetryUpdate);
+            }
             
             log.info("Saved telemetry for device: {}", mac);
 
@@ -124,7 +137,13 @@ public class SmartGardenService {
             String mac = root.get("device").asText();
             String userId = root.has("user") ? root.get("user").asText() : "unknown";
 
-            Device device = getOrCreateDevice(mac, userId);
+            java.util.Optional<Device> deviceOpt = getDeviceIfExists(mac);
+            if (deviceOpt.isEmpty()) {
+                log.debug("Ignored alert from unknown device: {}", mac);
+                return;
+            }
+            Device device = deviceOpt.get();
+
             device.setLastSeen(LocalDateTime.now());
             deviceRepository.save(device);
 
@@ -187,7 +206,12 @@ public class SmartGardenService {
             String mac = root.get("device").asText();
             String userId = root.has("user") ? root.get("user").asText() : "unknown";
 
-            Device device = getOrCreateDevice(mac, userId);
+            java.util.Optional<Device> deviceOpt = getDeviceIfExists(mac);
+            if (deviceOpt.isEmpty()) {
+                return;
+            }
+            Device device = deviceOpt.get();
+            
             device.setLastSeen(LocalDateTime.now());
             device.setOnline(true);
             deviceRepository.save(device);
@@ -199,7 +223,7 @@ public class SmartGardenService {
     }
 
     public void sendWaterCommand(String mac, Integer duration) {
-        Device device = getOrCreateDevice(mac, "unknown_user");
+        Device device = getDeviceOrThrow(mac);
         String topic = String.format("garden/%s/%s/command/water", device.getUserId(), mac);
 
         String payload;
@@ -214,7 +238,7 @@ public class SmartGardenService {
     }
 
     public void sendMeasureCommand(String mac) {
-        Device device = getOrCreateDevice(mac, "unknown_user");
+        Device device = getDeviceOrThrow(mac);
         // ESP subscribes to "command/read" not "command/measure"
         String topic = String.format("garden/%s/%s/command/read", device.getUserId(), mac);
         mqttGateway.sendToMqtt("{}", topic);
@@ -225,7 +249,7 @@ public class SmartGardenService {
 
     public DeviceSettingsDto getDeviceSettings(String mac) {
         // 1. Send GET request via MQTT
-        Device device = getOrCreateDevice(mac, "unknown");
+        Device device = getDeviceOrThrow(mac);
         String topic = String.format("garden/%s/%s/settings/get", device.getUserId(), mac);
         mqttGateway.sendToMqtt("{}", topic);
         log.info("Requested settings for device {}", mac);
@@ -272,7 +296,7 @@ public class SmartGardenService {
     }
 
     public void updateDeviceSettings(String mac, DeviceSettingsDto dto) {
-        Device device = getOrCreateDevice(mac, "unknown");
+        Device device = getDeviceOrThrow(mac);
 
         // 1. Update persisted metadata (Active Profile)
         if (dto.getActiveProfileName() != null) {
@@ -294,29 +318,45 @@ public class SmartGardenService {
     }
 
     public void resetDeviceSettings(String mac) {
-        Device device = getOrCreateDevice(mac, "unknown");
+        Device device = getDeviceOrThrow(mac);
         String topic = String.format("garden/%s/%s/settings/reset", device.getUserId(), mac);
         mqttGateway.sendToMqtt("{}", topic);
         log.info("Sent settings/reset command to device {}", mac);
     }
 
-    private Device getOrCreateDevice(String mac, String userId) {
+    private java.util.Optional<Device> getDeviceIfExists(String mac) {
+        return deviceRepository.findByMacAddress(mac);
+    }
+    
+    private Device getDeviceOrThrow(String mac) {
         return deviceRepository.findByMacAddress(mac)
-                .orElseGet(() -> {
-                    Device newDevice = new Device();
-                    newDevice.setMacAddress(mac);
-                    newDevice.setUserId(userId);
-                    newDevice.setFriendlyName("New Device " + mac.substring(8));
-                    newDevice.setOnline(true);
-                    newDevice.setLastSeen(LocalDateTime.now());
-                    return deviceRepository.save(newDevice);
-                });
+                .orElseThrow(() -> new RuntimeException("Device not found: " + mac));
     }
 
     public void updateDeviceName(String mac, String friendlyName) {
-        Device device = getOrCreateDevice(mac, "unknown");
+        Device device = getDeviceOrThrow(mac);
         device.setFriendlyName(friendlyName);
         deviceRepository.save(device);
         log.info("Renamed device {} to {}", mac, friendlyName);
+    }
+    @Transactional
+    public void deleteDevice(String mac) {
+        // Normalize MAC just in case
+        String normalizedMac = normalizeMac(mac); // Need to make sure normalizeMac is accessible or inline it
+        
+        log.info("Deleting device {} and all associated data", normalizedMac);
+        
+        measurementRepository.deleteByDevice_MacAddress(normalizedMac);
+        alertRepository.deleteByDevice_MacAddress(normalizedMac);
+        deviceSettingsRepository.deleteByDevice_MacAddress(normalizedMac);
+        deviceRepository.deleteById(normalizedMac);
+        
+        // Optional: Clean up MQTT ACLs if needed, but keeping it simple for now as per plan
+    }
+    
+    // Helper to ensure mac format match
+    private String normalizeMac(String mac) {
+         if (mac == null) return null;
+         return mac.replace(":", "").toUpperCase();
     }
 }

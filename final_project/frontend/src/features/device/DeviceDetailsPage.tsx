@@ -53,10 +53,10 @@ export function DeviceDetailsPage() {
         // For now, assuming liveMeasurement matches enough of Measurement structure
         const newMeasurement = {
           ...liveMeasurement,
-           // Ensure defaults if missing from WS
-           device: { macAddress: mac },
-        } as unknown as Measurement; 
-        
+          // Ensure defaults if missing from WS
+          device: { macAddress: mac },
+        } as unknown as Measurement;
+
         return [newMeasurement, ...prev];
       });
     }
@@ -85,7 +85,7 @@ export function DeviceDetailsPage() {
       <div className="flex justify-between items-start">
         <div>
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
-            {device.name || 'Unnamed Device'}
+            {device.friendlyName || 'Unnamed Device'}
           </h1>
           <p className="text-gray-500 font-mono">{device.macAddress}</p>
         </div>

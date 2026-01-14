@@ -141,4 +141,9 @@ public class DeviceController {
     public void resetSettings(@PathVariable String mac) {
         smartGardenService.resetDeviceSettings(normalizeMac(mac));
     }
+
+    @DeleteMapping("/{mac}")
+    public void deleteDevice(@PathVariable String mac) {
+        smartGardenService.deleteDevice(mac);
+    }
 }

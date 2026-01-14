@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-
+import { useQueryClient } from '@tanstack/react-query';
 
 interface AuthContextType {
   token: string | null;
@@ -14,6 +14,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
   const [username, setUsername] = useState<string | null>(localStorage.getItem('username'));
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     if (token) {
@@ -39,6 +40,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = () => {
     setToken(null);
     setUsername(null);
+    queryClient.removeQueries(); // Clear all data from cache to prevent leaks between users
   };
 
   return (

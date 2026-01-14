@@ -4,8 +4,11 @@ import type { Device } from '../../types';
 import { DeviceCard } from './DeviceCard';
 import { Plus, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { useDashboardWebSocket } from '../../hooks/useDashboardWebSocket';
 
 export function DashboardPage() {
+  useDashboardWebSocket(); // Start listening for updates
+
   const { data: devices, isLoading, error } = useQuery<Device[]>({
     queryKey: ['devices'],
     queryFn: async () => {
