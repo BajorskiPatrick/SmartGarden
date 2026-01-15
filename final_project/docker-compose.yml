@@ -1,5 +1,9 @@
 version: '3.8'
 services:
+  # java-app:
+  #   build:
+  #   environment:
+  #     - MQTT_BROKER_PUBLIC_URL
   mosquitto:
     image: iegomez/mosquitto-go-auth:latest
     restart: unless-stopped
@@ -59,8 +63,10 @@ services:
       SPRING_DATASOURCE_PASSWORD: admin
       SPRING_JPA_HIBERNATE_DDL_AUTO: update
       MQTT_BROKER_URL: tcp://mosquitto:1883
+      MQTT_BROKER_PUBLIC_URL: ${MQTT_BROKER_PUBLIC_URL}
     ports:
       - "8080:8080"
+  
 
   frontend:
     build:

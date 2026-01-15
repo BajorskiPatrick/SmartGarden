@@ -17,10 +17,18 @@ Całość backendu (Java Spring Boot, PostgreSQL, Mosquitto MQTT Broker) jest sk
     cd final_project/java_backend
     ```
 
-2.  Uruchom kontenery:
-    ```powershell
-    docker-compose up -d --build
-    ```
+2. Uruchom kontenery:
+
+   Wybierz komendę odpowiednią dla swojego systemu operacyjnego. Pamiętaj, aby zamiast `{IP}` wpisać swój adres lokalny (np. `192.168.1.15`).
+
+   **Linux / macOS (Bash):**
+   ```bash
+   MQTT_BROKER_PUBLIC_URL=mqtt://{IP}:1883 docker-compose up -d --build
+   ```
+   **Windows (PowerShell):**
+   ```powershell
+   $env:MQTT_BROKER_PUBLIC_URL="mqtt://{IP}:1883"; docker-compose up -d --build
+   ```
     *   To polecenie zbuduje obraz backendu i uruchomi bazę danych oraz brokera MQTT.
     *   **Backend API** będzie dostępne pod adresem: `http://localhost:8080`
     *   **MQTT Broker** będzie dostępny na porcie: `1883`
@@ -44,101 +52,62 @@ Całość backendu (Java Spring Boot, PostgreSQL, Mosquitto MQTT Broker) jest sk
     idf.py flash monitor
     ```
 
-3.  **Pierwsze uruchomienie (Provisioning):**
-    *   Po wgraniu, jeśli urządzenie nie ma zapisanych WiFi/MQTT w NVS, wejdzie w tryb Provisioningu (lub wstrzyma działanie).
-    *   Postępuj zgodnie z instrukcjami w logach `monitor` (np. użyj aplikacji mobilnej ESP BLE Provisioning lub wpisz dane na sztywno jeśli tak skonfigurowano w kodzie testowym).
-    *   W naszym setupie deweloperskim, ESP32 domyślnie łączy się z MQTT na adresie IP hosta (należy upewnić się, że `CONFIG_ESP_MQTT_URI` w `sdkconfig` lub kodzie wskazuje na poprawne IP Twojego komputera, np. `mqtt://192.168.x.x:1883`, a nie localhost, bo localhost na ESP32 to... ESP32).
+3.  **Pierwsze uruchomienie (Web Provisioning):**
+    *   Po wgraniu firmware, urządzenie wejdzie w tryb oczekiwania na Provisioning (dioda LED zacznie migać).
+    *   Otwórz aplikację webową: http://localhost:3000
+    *   Zaloguj się (domyślnie lub zarejestruj nowe konto).
+    *   Kliknij przycisk **"Add Device"** (lub wejdź na `/provision`).
+    *   Postępuj zgodnie z instrukcjami na ekranie:
+        1.  Wybierz urządzenie z listy (SmartGarden_XXXXXX).
+        2.  Kliknij "Pair" i potwierdź (na urządzeniu naciśnij przycisk BOOT, jeśli zostaniesz o to poproszony - w obecnej wersji autoryzacja jest zazwyczaj automatyczna lub wymaga fizycznego potwierdzenia).
+        3.  Wybierz sieć WiFi dla urządzenia i wpisz hasło.
+        4.  (Opcjonalnie) Wybierz profil rośliny.
+    *   Po zakończeniu, urządzenie połączy się z WiFi i MQTT, a Ty zostaniesz przekierowany do Dashboardu.
 
-## Scenariusz Prezentacji (Request Flow)
+## Funkcjonalność Aplikacji Webowej
 
-Poniżej znajduje się sekwencja komend `curl`, która demonstruje pełny przepływ: rejestrację użytkownika, logowanie, obsługę urządzenia i zmianę ustawień.
+Aplikacja dostępna jest pod adresem: `http://localhost:3000`.
 
-> **Uwaga**: W poniższych komendach:
-> *   Zamień `TWOJ_MAC_ADRES` na rzeczywisty MAC adres urządzenia (odczytany z logów ESP32 lub endpointu `/api/devices`).
-> *   Token JWT (`TOKEN`) uzyskasz w kroku 2 (Logowanie). Należy go podstawić do nagłówka `Authorization` w kolejnych zapytaniach.
+### 1. Rejestracja i Logowanie
 
-### 1. Rejestracja Użytkownika
+Aby korzystać z systemu Smart Garden, wymagane jest konto użytkownika.
+1.  Na ekranie logowania wybierz opcję rejestracji.
+2.  Podaj unikalną nazwę użytkownika oraz hasło.
+3.  Po utworzeniu konta nastąpi automatyczne logowanie.
 
-Tworzymy nowego użytkownika w systemie.
+### 2. Dashboard
 
-```powershell
-curl -X POST http://localhost:8080/api/auth/register `
-  -H "Content-Type: application/json" `
-  -d "{\"username\": \"patrick\", \"password\": \"password123\"}"
-```
+Główny widok aplikacji (Dashboard) prezentuje listę wszystkich przypisanych do użytkownika urządzeń.
+*   **Kafelki urządzeń**: Każde urządzenie wyświetlane jest jako karta zawierająca nazwę, status (online/offline) oraz ostatni odczyt wilgotności.
+*   **Dodawanie urządzeń**: Przycisk "Add Device" (lub "Provision Device") w górnym rogu pozwala na sparowanie nowego modułu ESP32.
 
-### 2. Logowanie (Pobranie Tokena)
+### 3. Dodawanie Nowego Urządzenia (Provisioning)
 
-Logujemy się, aby uzyskać token JWT potrzebny do autoryzacji.
+Proces łączenia urządzenia ESP32 z siecią WiFi i przypisywania do konta użytkownika odbywa się przez przeglądarkę (Web Bluetooth / Web Serial - zależnie od implementacji, tutaj standardowo przez formularz provisioning).
+1.  Kliknij **"Add Device"**.
+2.  Wyślij żądanie wyszukania urządzeń (Browser poprosi o uprawnienia Bluetooth/Serial jeśli dotyczy, lub po prostu wprowadź dane). *W tym projekcie korzystamy z mechanizmu Provisioning API.*
+3.  Postępuj zgodnie z kreatorem:
+    *   Wybierz wykryte urządzenie.
+    *   Podaj dane do sieci WiFi (SSID i hasło), z którą ma się połączyć ESP32.
+    *   (Opcjonalnie) Wybierz profil rośliny, aby wstępnie skonfigurować ustawienia.
 
-```powershell
-curl -X POST http://localhost:8080/api/auth/login `
-  -H "Content-Type: application/json" `
-  -d "{\"username\": \"patrick\", \"password\": \"password123\"}"
-```
-*   **Odpowiedź**: Ciąg znaków (Token JWT). Skopiuj go!
+### 4. Szczegóły Urządzenia
 
----
-**W kolejnych krokach podmieniaj `TWOJ_TOKEN` na skopiowany token.**
----
+Kliknięcie w kafel urządzenia na Dashboardzie przenosi do widoku szczegółowego.
 
-### 3. Pobranie Listy Urządzeń
+#### Telemetria i Wykresy
+*   Bieżące odczyty: Wilgotność gleby (%), Temperatura (°C), Poziom sygnału WiFi (RSSI).
+*   Wykresy historyczne: Wizualizacja zmian wilgotności i temperatury w czasie.
 
-Sprawdzamy, czy ESP32 podłączyło się do systemu. ESP32 automatycznie rejestruje się w backendzie po wysłaniu pierwszej telemetrii.
+#### Sterowanie Ręczne (Manual Override)
+*   **Water Now**: Przycisk pozwalający na natychmiastowe uruchomienie pompy na określony czas (np. 5 sekund). Służy do doraźnego nawadniania lub testowania pompy.
 
-```powershell
-curl -G http://localhost:8080/api/devices `
-  -H "Authorization: Bearer TWOJ_TOKEN"
-```
-*   Skopiuj `macAddress` (np. `78:EE:4C:00:06:5C`) z odpowiedzi.
+#### Ustawienia (Settings)
+W zakładce ustawień możesz skonfigurować automatykę:
+*   **Progi wilgotności (Min/Max)**:
+    *   Jeśli wilgotność spadnie poniżej **Min**, system może wysłać powiadomienie lub uruchomić podlewanie (zależnie od logiki firmware).
+    *   Jeśli wilgotność wzrośnie powyżej **Max**, podlewanie zostanie wstrzymane.
+*   **Czas podlewania**: Jak długo pompa ma pracować podczas jednego cyklu nawadniania.
+*   **Interwał pomiarów**: Jak często urządzenie ma się wybudzać, mierzyć wilgotność i wysyłać dane do serwera.
+*   **Factory Reset**: Opcja przywrócenia ustawień domyślnych urządzenia.
 
-### 4. Pobranie Aktualnych Ustawień (GET)
-
-Pobieramy bieżącą konfigurację z urządzenia. Jeśli są to ustawienia domyślne, odpowiedź może zawierać tylko podstawowe pola.
-
-```powershell
-curl -G http://localhost:8080/api/devices/TWOJ_MAC_ADRES/settings `
-  -H "Authorization: Bearer TWOJ_TOKEN"
-```
-
-### 5. Aktualizacja Ustawień (Zmiana Progów)
-
-Ustawiamy nowe progi wilgotności (np. min 30%, max 60%) i czas podlewania.
-
-```powershell
-curl -X POST http://localhost:8080/api/devices/TWOJ_MAC_ADRES/settings `
-  -H "Content-Type: application/json" `
-  -H "Authorization: Bearer TWOJ_TOKEN" `
-  -d "{\"hum_min\": 30.0, \"hum_max\": 60.0, \"watering_duration_sec\": 10, \"measurement_interval_sec\": 15}"
-```
-*   Obserwuj logi ESP32 (`idf.py monitor`) – powinieneś zobaczyć komunikat o otrzymaniu nowych ustawień.
-*   Sprawdź ponownie GET (krok 4), aby potwierdzić zmiany.
-
-### 6. Reset Ustawień (Factory Reset)
-
-Przywracamy ustawienia urządzenia do wartości domyślnych/fabrycznych.
-
-```powershell
-curl -X POST http://localhost:8080/api/devices/TWOJ_MAC_ADRES/settings/reset `
-  -H "Authorization: Bearer TWOJ_TOKEN"
-```
-*   ESP32 potwierdzi odebranie komendy RESET i przywróci progi domyślne (np. brak alertów, domyślny czas podlewania).
-*   Ponowny GET zwróci tylko podstawowe parametry (bez `hum_min`/`hum_max`, które zostały wyczyszczone).
-
-### 7. Zlecenie Podlewania (Manualne)
-
-Wymuszamy uruchomienie pompy na 5 sekund.
-
-```powershell
-curl -X POST "http://localhost:8080/api/devices/TWOJ_MAC_ADRES/water?duration=5" `
-  -H "Authorization: Bearer TWOJ_TOKEN"
-```
-
-### 8. Odczyt Historii Pomiarów (Telemetria)
-
-Pobieramy ostatnie pomiary z bazy danych.
-
-```powershell
-curl -G http://localhost:8080/api/devices/TWOJ_MAC_ADRES/telemetry `
-  -H "Authorization: Bearer TWOJ_TOKEN"
-```
