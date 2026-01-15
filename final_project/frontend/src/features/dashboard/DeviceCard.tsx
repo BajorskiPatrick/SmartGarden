@@ -97,13 +97,10 @@ export function DeviceCard({ device, onWater }: DeviceCardProps) {
             </button>
           </div>
 
-          {/* Active Profile Indicator */}
-          {device.activeProfileName && (
-            <div className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700 flex items-center justify-center text-xs text-gray-500">
-              <Sprout className="w-3 h-3 mr-1 text-green-500" />
-              Profile: <span className="font-medium text-gray-700 dark:text-gray-300 ml-1">{device.activeProfileName}</span>
-            </div>
-          )}
+          <div className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700 flex items-center justify-center text-xs text-gray-500">
+            <Sprout className="w-3 h-3 mr-1 text-green-500" />
+            Profile: <span className="font-medium text-gray-700 dark:text-gray-300 ml-1">{device.activeProfileName || 'None'}</span>
+          </div>
         </div>
       </div>
 

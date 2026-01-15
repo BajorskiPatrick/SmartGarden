@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Wifi, Check, ArrowRight, Loader2, Bluetooth, Settings, Sprout } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../../lib/axios';
@@ -32,6 +33,7 @@ const DEFAULT_SETTINGS: DeviceSettings = {
 
 export function ProvisionPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [wifiSsid, setWifiSsid] = useState('');
   const [wifiPass, setWifiPass] = useState('');
   const [stationName, setStationName] = useState('');
@@ -206,6 +208,15 @@ export function ProvisionPage() {
 
               {activeProfileTab === 'presets' ? (
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <button
+                    onClick={() => {
+                      setSettings(DEFAULT_SETTINGS);
+                    }}
+                    className={`text-left px-3 py-2 rounded-lg text-sm border transition-all ${!settings.active_profile_name ? 'bg-gray-100 border-gray-500 text-gray-800 dark:bg-gray-700 dark:text-gray-300' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:border-gray-400'}`}
+                  >
+                    <div className="font-medium truncate">No Profile</div>
+                    <div className="text-[10px] text-gray-500">Default (Soil &gt; 0%)</div>
+                  </button>
                   {PLANT_PROFILES.map(profile => (
                     <button
                       key={profile.id}
@@ -253,6 +264,16 @@ export function ProvisionPage() {
                 setIsLoading(true);
                 setStatusMessage('Generating credentials...');
 
+                // Capture start time to ensure we only accept NEW connections
+                // We use server timestamp (lastSeen) delta instead of client clock to avoid skew
+                let initialLastSeen: number | null = null;
+                try {
+                  const preCheck = await api.get(`/devices/${connectedMac}`);
+                  if (preCheck.data?.lastSeen) {
+                    initialLastSeen = new Date(preCheck.data.lastSeen).getTime();
+                  }
+                } catch (e) { /* ignore 404 */ }
+
                 if (!wifiSsid) {
                   setError("WiFi SSID is required.");
                   setIsLoading(false);
@@ -296,15 +317,39 @@ export function ProvisionPage() {
 
                   setStatusMessage('WiFi Configured. Waiting for device to come online...');
 
-                  // 4. Poll for Online Status (Max 60s)
+                  // 4. Poll for Online Status (Max 30s)
                   let online = false;
-                  for (let i = 0; i < 30; i++) { // 30 * 2s = 60s
+                  for (let i = 0; i < 15; i++) { // 15 * 2s = 30s
                     await new Promise(r => setTimeout(r, 2000));
                     try {
+                      // Force fresh fetch? No invalidation needed for direct GET usually
                       const devRes = await api.get(`/devices/${connectedMac}`);
-                      if (devRes.data && devRes.data.online) {
-                        online = true;
-                        break;
+                      const devData = devRes.data;
+
+                      if (devData && devData.online) {
+                        // Check if this is a fresh connection
+                        // Check if this is a fresh connection (timestamp update)
+                        if (devData.lastSeen) {
+                          const currentLastSeen = new Date(devData.lastSeen).getTime();
+
+                          // If we had a previous record, ensure it updated
+                          if (initialLastSeen !== null) {
+                            if (currentLastSeen > initialLastSeen) {
+                              online = true;
+                              break;
+                            }
+                          } else {
+                            // No previous record, and now we have one -> Online
+                            online = true;
+                            break;
+                          }
+                        } else {
+                          // Fallback if backend doesn't provide lastSeen yet (shouldn't happen)
+                          // Consider online if no lastSeen? Or assume stale? 
+                          // Safer to assume online if backend says so but lacks timestamp (legacy compat)
+                          online = true;
+                          break;
+                        }
                       }
                     } catch (e) {
                       // Ignore 404/error while booting
@@ -312,7 +357,10 @@ export function ProvisionPage() {
                   }
 
                   if (!online) {
-                    throw new Error("Device did not come online in time. Please check WiFi credentials.");
+                    // Specific error handling for timeout
+                    const timeoutError = new Error("Connection Timeout");
+                    (timeoutError as any).isTimeout = true;
+                    throw timeoutError;
                   }
 
                   setStatusMessage('Device Online. Applying Settings...');
@@ -328,19 +376,28 @@ export function ProvisionPage() {
                   setWifiSsid('');
                   setWifiPass('');
 
+                  // Invalidate dashboard query to show new device
+                  await queryClient.invalidateQueries({ queryKey: ['devices'] });
+
                   setTimeout(() => {
                     navigate('/');
                   }, 1500);
 
                 } catch (err: any) {
                   console.error("Provisioning sequence error:", err);
-                  let msg = err.message || 'Unknown error';
-                  if (err.response) {
-                    msg = err.response.data?.message || `Server error ${err.response.status}`;
-                  }
-                  setError(msg);
-                } finally {
                   setIsLoading(false);
+
+                  if (err.isTimeout || err.message === "Connection Timeout") {
+                    // CRITICAL: Reset connection state. Device rebooted.
+                    setConnectedMac(null);
+                    setError("Device rebooted but failed to connect to WiFi. Please connect to the device again and check your password.");
+                  } else {
+                    let msg = err.message || 'Unknown error';
+                    if (err.response) {
+                      msg = err.response.data?.message || `Server error ${err.response.status}`;
+                    }
+                    setError(msg);
+                  }
                 }
               }}
               disabled={!wifiSsid || !stationName || isLoading || isProvisioning}
@@ -349,6 +406,30 @@ export function ProvisionPage() {
               {isLoading || isProvisioning ? <Loader2 className="w-6 h-6 animate-spin" /> : <Check className="w-6 h-6" />}
               {isLoading || isProvisioning ? 'Configuring...' : 'Step 2: Configure & Save'}
             </button>
+
+            {/* Retry Options on Error */}
+            {error && (
+              <div className="flex gap-4 mt-4 animate-in fade-in slide-in-from-top-2">
+                <button
+                  onClick={() => {
+                    setError(null);
+                    setStatusMessage('');
+                    // Optional: Reset WiFi inputs if we suspect they are wrong?
+                    // For now, keep them so user can edit.
+                  }}
+                  className="flex-1 px-4 py-3 bg-blue-100 text-blue-700 font-semibold rounded-lg hover:bg-blue-200 transition-colors"
+                >
+                  Try Provisioning Again
+                </button>
+                <button
+                  onClick={() => navigate('/')}
+                  className="flex-1 px-4 py-3 bg-gray-100 text-gray-700 font-semibold rounded-lg hover:bg-gray-200 transition-colors"
+                >
+                  Go to Dashboard
+                </button>
+              </div>
+            )
+            }
           </div>
         )}
       </div>

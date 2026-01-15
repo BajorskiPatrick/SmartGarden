@@ -44,4 +44,8 @@ public class DeviceSettingsDto {
     @JsonProperty("active_profile_name")
     @JsonAlias("activeProfileName")
     private String activeProfileName;
+
+    @JsonProperty("factory_reset")
+    @JsonAlias("factoryReset")
+    private Boolean factoryReset;
 }

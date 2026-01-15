@@ -63,4 +63,7 @@ bool wifi_prov_is_fully_provisioned(void);
  */
 bool wifi_prov_is_provisioning_active(void);
 
+// Force clear credentials and restart (Factory Reset)
+void wifi_prov_clear_and_reset(void);
+
 #endif // WIFI_PROV_H

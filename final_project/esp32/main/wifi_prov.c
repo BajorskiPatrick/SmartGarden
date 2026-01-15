@@ -34,9 +34,12 @@
 #define FACTORY_RESET_MAGIC 0x53475246u // 'SGRF'
 RTC_NOINIT_ATTR static uint32_t s_factory_reset_marker = 0;
 
-// --- KONFIGURACJA GPIO (BOOT Button) ---
+// --- KONFIGURACJA GPIO (BOOT Button & LED) ---
 #define BUTTON_GPIO GPIO_NUM_0 
 #define BUTTON_HOLD_RESET_MS 3000
+
+#define LED_GPIO GPIO_NUM_2
+#define LED_BLINK_PERIOD_MS 500
 
 // --- BLE UUID ---
 #define SERVICE_UUID        {0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef}
@@ -112,6 +115,7 @@ static void get_device_id_mac_hex(char *out, size_t out_len) {
 }
 
 static TaskHandle_t s_prov_ctrl_task_handle = NULL;
+static TaskHandle_t s_blink_task_handle = NULL;
 
 #define PROV_ADV_TIMEOUT_MS (2 * 60 * 1000) // 2 minuty na konfigurację
 
@@ -127,6 +131,8 @@ static void stop_prov_timeout(void);
 static void log_missing_required_fields(const char *reason);
 static void log_ble_state(const char *where);
 static void request_advertising_start(const char *reason);
+static void start_blink_task(void);
+static void stop_blink_task(void);
 
 // --------------------------------------------------------------------------
 // 1. HELPERS (Timer, NVS)
@@ -248,6 +254,39 @@ static void start_prov_timeout_if_needed(void) {
 
     esp_timer_stop(prov_timeout_timer);
     esp_timer_start_once(prov_timeout_timer, (int64_t)PROV_ADV_TIMEOUT_MS * 1000);
+    esp_timer_stop(prov_timeout_timer);
+    esp_timer_start_once(prov_timeout_timer, (int64_t)PROV_ADV_TIMEOUT_MS * 1000);
+}
+
+// --- LED Blinking Logic ---
+
+static void blink_task(void *arg) {
+    gpio_reset_pin(LED_GPIO);
+    gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
+    
+    int level = 0;
+    while (1) {
+        gpio_set_level(LED_GPIO, level);
+        level = !level;
+        vTaskDelay(pdMS_TO_TICKS(LED_BLINK_PERIOD_MS));
+    }
+}
+
+static void start_blink_task(void) {
+    if (s_blink_task_handle == NULL) {
+        xTaskCreate(blink_task, "prov_blink", 2048, NULL, 5, &s_blink_task_handle);
+    }
+}
+
+static void stop_blink_task(void) {
+    if (s_blink_task_handle != NULL) {
+        vTaskDelete(s_blink_task_handle);
+        s_blink_task_handle = NULL;
+        // Ensure LED is off
+        gpio_reset_pin(LED_GPIO);
+        gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
+        gpio_set_level(LED_GPIO, 0);
+    }
 }
 
 static esp_err_t save_prov_settings_partial(void) {
@@ -355,6 +394,9 @@ static void reset_temp_buffers_and_flags(void) {
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data) {
+    // Static counter for connection failures
+    static int s_retry_num = 0;
+
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         // Nie łączymy się tutaj automatycznie, bo connect_wifi() ustawi config i wywoła connect ręcznie.
         // esp_wifi_connect(); 
@@ -363,6 +405,17 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGW(LOG_TAG, "WiFi Disconnected. Retrying...");
         xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+
+        s_retry_num++;
+        // If we failed 3 times, re-enable BLE Provisioning so user can correct credentials
+        if (s_retry_num >= 3) {
+             ESP_LOGW(LOG_TAG, "WiFi Connection failed 3 times (s_retry_num=%d). Re-enabling BLE Provisioning.", s_retry_num);
+             // Verify if we should start window (safe to call even if already open, but good to check)
+             if (!ble_client_connected) {
+                 start_provisioning_window();
+             }
+             // We continue to retry WiFi in background though
+        }
 
         uint32_t suppressed = 0;
         if (alert_limiter_allow("wifi.disconnected", esp_log_timestamp(), 60 * 1000, &suppressed)) {
@@ -389,6 +442,9 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(LOG_TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        
+        // Reset retry counter on success
+        s_retry_num = 0;
 
         if (alert_limiter_allow("wifi.got_ip", esp_log_timestamp(), 5 * 60 * 1000, NULL)) {
             mqtt_app_send_alert2("wifi.got_ip", "info", "wifi", "WiFi got IP");
@@ -668,6 +724,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         ble_adv_active = false; // advertising zwykle przestaje działać po zestawieniu połączenia
         ble_adv_active = false; // advertising zwykle przestaje działać po zestawieniu połączenia
         stop_prov_timeout();
+        stop_blink_task(); // Stop blinking when connected
         s_is_authorized = false; // Reset auth on new connection
         log_ble_state("connect_evt");
         break;
@@ -689,6 +746,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             esp_timer_start_once(r_timer, 1000000);
         } else if (provisioning_window_open && !provisioning_done) {
             request_advertising_start("disconnect_evt");
+            start_blink_task(); // Resume blinking if we are back to advertising
         }
         log_ble_state("disconnect_evt");
         break;
@@ -706,6 +764,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
 
             if (!restart_pending && provisioning_window_open && !provisioning_done) {
                 request_advertising_start("close_evt");
+                start_blink_task(); // Resume blinking
             }
         }
 
@@ -837,6 +896,7 @@ static void stop_ble_provisioning(void) {
     ESP_LOGI(LOG_TAG, "Stopping advertising (stop_ble_provisioning)...");
     esp_ble_gap_stop_advertising();
     ble_adv_active = false;
+    stop_blink_task();
     log_ble_state("stop_ble_provisioning");
 }
 
@@ -875,6 +935,8 @@ static void start_provisioning_window(void) {
     } else {
         request_advertising_start("start_provisioning_window");
     }
+
+    start_blink_task();
 
     log_ble_state("start_provisioning_window");
 }
@@ -1058,4 +1120,13 @@ bool wifi_prov_is_provisioning_active(void) {
     if (ble_adv_active) return true;
     if (ble_client_connected) return true;
     return false;
+    if (ble_client_connected) return true;
+    return false;
+}
+
+void wifi_prov_clear_and_reset(void) {
+    ESP_LOGW(LOG_TAG, "Forced Factory Reset invoked.");
+    clear_wifi_credentials();
+    s_factory_reset_marker = FACTORY_RESET_MAGIC; // Optional: mark so we know why we reset
+    esp_restart();
 }

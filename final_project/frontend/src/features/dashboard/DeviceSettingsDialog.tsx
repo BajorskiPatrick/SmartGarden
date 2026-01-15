@@ -151,8 +151,19 @@ export function DeviceSettingsDialog({ macAddress, isOpen, onClose, currentDevic
   });
 
   const handleDelete = async () => {
-    if (confirm('Are you sure you want to delete this device? This action cannot be undone.')) {
-      await deleteDeviceMutation.mutateAsync();
+    if (confirm('Are you sure you want to delete this device? This action cannot be undone and will reset the device to provisioning mode.')) {
+      try {
+        // 1. Send factory reset command to device
+        await api.post(`/devices/${macAddress}/settings`, { factory_reset: true });
+        // 2. Wait for propagation
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        // 3. Delete device from cloud
+        await deleteDeviceMutation.mutateAsync();
+      } catch (error) {
+        console.error("Failed to reset device, deleting anyway", error);
+        // If device is offline, reset might fail, but we still want to delete it from account
+        await deleteDeviceMutation.mutateAsync();
+      }
     }
   };
 
@@ -220,15 +231,26 @@ export function DeviceSettingsDialog({ macAddress, isOpen, onClose, currentDevic
                 {/* Profile List */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 max-h-40 overflow-y-auto pr-2 custom-scrollbar">
                   {activeTab === 'presets' ? (
-                    PLANT_PROFILES.map(profile => (
+                    <>
                       <button
-                        key={profile.id}
-                        onClick={() => handleProfileSelect(profile)}
-                        className={`text-left px-3 py-2 rounded-lg text-sm border transition-all ${selectedProfileId === profile.id ? 'bg-green-100 border-green-500 text-green-800 dark:bg-green-900/40 dark:text-green-300' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:border-green-300 dark:hover:border-green-700'}`}
+                        onClick={() => {
+                          setSelectedProfileId('');
+                          setFormData(prev => ({ ...prev, active_profile_name: undefined }));
+                        }}
+                        className={`text-left px-3 py-2 rounded-lg text-sm border transition-all ${!selectedProfileId && !formData.active_profile_name ? 'bg-gray-100 border-gray-500 text-gray-800 dark:bg-gray-700 dark:text-gray-300' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:border-gray-400'}`}
                       >
-                        <div className="font-medium truncate">{profile.name}</div>
+                        <div className="font-medium truncate">No Profile</div>
                       </button>
-                    ))
+                      {PLANT_PROFILES.map(profile => (
+                        <button
+                          key={profile.id}
+                          onClick={() => handleProfileSelect(profile)}
+                          className={`text-left px-3 py-2 rounded-lg text-sm border transition-all ${selectedProfileId === profile.id ? 'bg-green-100 border-green-500 text-green-800 dark:bg-green-900/40 dark:text-green-300' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:border-green-300 dark:hover:border-green-700'}`}
+                        >
+                          <div className="font-medium truncate">{profile.name}</div>
+                        </button>
+                      ))}
+                    </>
                   ) : (
                     <>
                       {userProfiles?.map(profile => (
@@ -258,11 +280,14 @@ export function DeviceSettingsDialog({ macAddress, isOpen, onClose, currentDevic
                 </div>
 
                 {/* Active Profile Info */}
-                {selectedProfileId && (
-                  <div className="mt-3 text-xs text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800 p-2 rounded border border-gray-100 dark:border-gray-700">
-                    Selected: <span className="font-semibold text-green-600">{activeTab === 'presets' ? PLANT_PROFILES.find(p => p.id === selectedProfileId)?.name : userProfiles?.find(p => p.id === selectedProfileId)?.name}</span>
-                  </div>
-                )}
+                <div className="mt-3 text-xs text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800 p-2 rounded border border-gray-100 dark:border-gray-700">
+                  Selected: <span className="font-semibold text-green-600">
+                    {activeTab === 'presets'
+                      ? (selectedProfileId ? PLANT_PROFILES.find(p => p.id === selectedProfileId)?.name : (formData.active_profile_name || 'None'))
+                      : (selectedProfileId ? userProfiles?.find(p => p.id === selectedProfileId)?.name : (formData.active_profile_name || 'None'))
+                    }
+                  </span>
+                </div>
 
                 {/* Create Profile Dialog Overlay */}
                 {isCreatingProfile && (

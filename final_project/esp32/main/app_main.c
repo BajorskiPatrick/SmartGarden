@@ -436,7 +436,13 @@ void process_incoming_data(const char *topic, const char *payload, int len) {
             bool has_soil_min = false, has_soil_max = false;
             bool has_light_min = false, has_light_max = false;
 
-            cJSON *item;
+            cJSON *item = cJSON_GetObjectItem(root, "factory_reset");
+            if (cJSON_IsBool(item) && cJSON_IsTrue(item)) {
+                ESP_LOGW(TAG, "Odebrano komendę factory_reset!");
+                wifi_prov_clear_and_reset(); // This triggers reboot
+                cJSON_Delete(root);
+                return;
+            }
 
             item = cJSON_GetObjectItem(root, "temp_min");
             if (cJSON_IsNumber(item)) {
