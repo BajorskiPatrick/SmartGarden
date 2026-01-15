@@ -15,7 +15,8 @@ export default function LoginScreen({ navigation }: any) {
     setLoading(true);
     try {
       const res = await api.post('/auth/login', { username, password });
-      await login(res.data.token, res.data.username);
+      // API returns the token string directly as res.data
+      await login(res.data, username);
     } catch (error: any) {
       console.error('Login error:', error);
       const errorMessage = typeof error.response?.data === 'string' 
