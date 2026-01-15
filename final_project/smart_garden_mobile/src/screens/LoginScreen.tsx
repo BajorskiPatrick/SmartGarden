@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, Alert, SafeAreaView } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../lib/axios';
 
@@ -15,8 +16,12 @@ export default function LoginScreen({ navigation }: any) {
     try {
       const res = await api.post('/auth/login', { username, password });
       await login(res.data.token, res.data.username);
-    } catch (e: any) {
-      Alert.alert("Login Failed", e.response?.data?.message || "Connection error");
+    } catch (error: any) {
+      console.error('Login error:', error);
+      const errorMessage = typeof error.response?.data === 'string' 
+        ? error.response.data 
+        : error.response?.data?.message || 'Login failed';
+      Alert.alert('Login Failed', errorMessage);
     } finally {
       setLoading(false);
     }

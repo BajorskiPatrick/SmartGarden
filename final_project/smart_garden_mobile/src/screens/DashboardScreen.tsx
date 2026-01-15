@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, Text, FlatList, TouchableOpacity, RefreshControl, SafeAreaView } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
 import { useDevices, Device } from '../hooks/useDevices';
 import { Plus, Power, Wifi, WifiOff, LogOut } from 'lucide-react-native';

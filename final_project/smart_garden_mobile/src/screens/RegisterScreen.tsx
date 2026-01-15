@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, Alert, SafeAreaView } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../lib/axios';
 
 export default function RegisterScreen({ navigation }: any) {
@@ -12,10 +13,14 @@ export default function RegisterScreen({ navigation }: any) {
     setLoading(true);
     try {
       await api.post('/auth/register', { username, password });
-      Alert.alert("Success", "Account created! Please login.");
-      navigation.goBack();
-    } catch (e: any) {
-      Alert.alert("Registration Failed", e.response?.data?.message || "Connection error");
+      Alert.alert('Success', 'User registered successfully');
+      navigation.navigate('Login');
+    } catch (error: any) {
+      console.error('Registration error:', error);
+      const errorMessage = typeof error.response?.data === 'string'
+        ? error.response.data
+        : error.response?.data?.message || 'Registration failed';
+      Alert.alert('Registration Failed', errorMessage);
     } finally {
       setLoading(false);
     }

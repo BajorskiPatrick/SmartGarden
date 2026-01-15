@@ -54,11 +54,15 @@ function Navigation() {
   );
 }
 
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <Navigation />
+        <SafeAreaProvider>
+          <Navigation />
+        </SafeAreaProvider>
       </AuthProvider>
     </QueryClientProvider>
   );
