@@ -23,12 +23,12 @@ export function useDashboardWebSocket() {
     useEffect(() => {
         if (!token || !username) return;
 
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const host = window.location.hostname;
-        const port = '8080'; // Still hardcoded port for dev
+        // Use env var if available, otherwise derive dynamically from window location (for production/LAN)
+        const wsUrl = import.meta.env.VITE_WS_URL ||
+            `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:8080/ws`;
 
         const client = new Client({
-            brokerURL: `${protocol}//${host}:${port}/ws`,
+            brokerURL: wsUrl,
             connectHeaders: {
                 Authorization: `Bearer ${token}`,
             },

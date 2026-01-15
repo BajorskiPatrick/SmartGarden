@@ -6,12 +6,12 @@ WORKDIR /workspace
 COPY pom.xml ./
 
 # Cache dependencies
-RUN mvn -q -DskipTests dependency:go-offline
+RUN --mount=type=cache,target=/root/.m2 mvn -q -DskipTests dependency:go-offline
 
 COPY src/ src/
 
 # Build fat jar (Spring Boot)
-RUN mvn -q -DskipTests package \
+RUN --mount=type=cache,target=/root/.m2 mvn -q -DskipTests package \
  && (cp target/*-SNAPSHOT.jar target/app.jar || cp target/*.jar target/app.jar)
 
 FROM eclipse-temurin:21-jre
