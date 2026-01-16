@@ -30,3 +30,17 @@ export interface PlantProfile {
     watering_duration_sec: number;
     measurement_interval_sec: number;
 }
+
+export interface DeviceSettings {
+    friendlyName?: string;
+    active_profile_name?: string;
+    temp_min?: number;
+    temp_max?: number;
+    hum_min?: number;
+    hum_max?: number;
+    soil_min?: number;
+    soil_max?: number;
+    light_min?: number;
+    light_max?: number;
+    factory_reset?: boolean;
+}

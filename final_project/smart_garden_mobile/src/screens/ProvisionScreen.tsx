@@ -13,6 +13,7 @@ export default function ProvisionScreen({ navigation }: any) {
   const [ssid, setSsid] = useState('');
   const [password, setPassword] = useState('');
   const [loadingCreds, setLoadingCreds] = useState(false);
+  const [verificationSuccess, setVerificationSuccess] = useState(false);
 
   // Auto-fill username if available, needed for provisioning
   useEffect(() => {
@@ -69,6 +70,44 @@ export default function ProvisionScreen({ navigation }: any) {
              user_id: creds.user_id,
              broker_url: creds.broker_url
          });
+
+         // 4. Verification Loop
+         console.log("Starting verification loop...");
+         setLoadingCreds(true); // Re-use loading state for verification phase
+         
+         // Poll for up to 30 seconds
+         const maxRetries = 15; // 15 * 2s = 30s
+         let isOnline = false;
+
+         for (let i = 0; i < maxRetries; i++) {
+             console.log(`Verification attempt ${i+1}/${maxRetries}`);
+             try {
+                 await new Promise(r => setTimeout(r, 2000));
+                 const checkRes = await api.get(`/devices/${wifiMac}`);
+                 const checkDevice = checkRes.data;
+                 
+                 // If device is newly provisioned, lastSeen might be null initially.
+                 // We want to see it online: true OR a recent lastSeen
+                 if (checkDevice.online || checkDevice.lastSeen) {
+                    console.log("Device verified online!");
+                    isOnline = true;
+                    break;
+                 }
+             } catch(checkErr) {
+                 console.log("Verification check failed (ignoring):", checkErr);
+             }
+         }
+
+         if (isOnline) {
+             setVerificationSuccess(true);
+             Alert.alert("Success", "Device connected and verified!");
+             navigation.navigate('Dashboard');
+         } else {
+             Alert.alert(
+                 "Connection Timeout", 
+                 "The device did not come online. Please check your WiFi credentials and ensure the device is within range."
+             );
+         }
 
     } catch (e: any) {
         console.error("Provisioning Prep Error:", e);
@@ -173,12 +212,18 @@ export default function ProvisionScreen({ navigation }: any) {
                             <ActivityIndicator color="white" />
                         ) : status === 'awaiting_auth' ? (
                             <Text className="text-white text-center font-bold">Waiting for Button Press...</Text>
+                        ) : loadingCreds ? ( 
+                            // Re-using loadingCreds for the verification phase
+                             <View className="flex-row justify-center items-center">
+                                <ActivityIndicator color="white" className="mr-2" />
+                                <Text className="text-white text-center font-bold">Verifying Connection...</Text>
+                             </View>
                         ) : (
                             <Text className="text-white text-center font-bold">Send Configuration</Text>
                         )}
                     </TouchableOpacity>
                     
-                    {status === 'success' && (
+                    {verificationSuccess && (
                          <View className="mt-4 bg-green-100 p-4 rounded-xl">
                             <Text className="text-green-800 text-center font-bold">Success! Device is rebooting.</Text>
                             <TouchableOpacity onPress={() => navigation.goBack()} className="mt-2">

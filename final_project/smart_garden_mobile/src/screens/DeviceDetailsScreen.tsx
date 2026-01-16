@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator, Alert, RefreshControl, Modal, FlatList } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator, Alert, RefreshControl, Modal, FlatList, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { ArrowLeft, Thermometer, Droplets, Sun, Activity, Trash2, Sprout, ChevronRight, X, Waves, AlertTriangle } from 'lucide-react-native';
@@ -17,6 +17,8 @@ export default function DeviceDetailsScreen() {
 
     const [waterDuration, setWaterDuration] = useState(5);
     const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+    const [isRenameModalOpen, setIsRenameModalOpen] = useState(false);
+    const [newName, setNewName] = useState(initialDevice?.friendlyName || "");
 
     // Fetch latest data (DeviceInfo + Latest Telemetry)
     const { data: device, isLoading, refetch } = useQuery({
@@ -50,6 +52,13 @@ export default function DeviceDetailsScreen() {
         refetchInterval: 5000, 
     });
 
+    // Update newName when device loads
+    React.useEffect(() => {
+        if (device?.friendlyName) {
+            setNewName(device.friendlyName);
+        }
+    }, [device]);
+
     // Fetch Device Settings for Ranges
     const { data: settings } = useQuery<DeviceSettings>({
         queryKey: ['settings', mac],
@@ -57,6 +66,21 @@ export default function DeviceDetailsScreen() {
             const res = await api.get(`/devices/${mac}/settings`);
             return res.data;
         }
+    });
+
+    // Mutations
+    const renameMutation = useMutation({
+        mutationFn: async (name: string) => {
+            await api.patch(`/devices/${mac}`, { friendlyName: name });
+        },
+        onSuccess: () => {
+            setIsRenameModalOpen(false);
+            Alert.alert("Success", "Device renamed successfully.");
+            queryClient.invalidateQueries({ queryKey: ['device', mac] });
+            queryClient.invalidateQueries({ queryKey: ['devices'] }); // Refresh dashboard list
+            refetch();
+        },
+        onError: () => Alert.alert("Error", "Failed to rename device")
     });
 
     // Mutations
@@ -186,13 +210,19 @@ export default function DeviceDetailsScreen() {
 
     return (
         <SafeAreaView className="flex-1 bg-gray-50">
+
             {/* Header */}
             <View className="px-6 py-4 bg-white flex-row items-center border-b border-gray-100 shadow-sm">
                 <TouchableOpacity onPress={() => navigation.goBack()} className="mr-4">
                     <ArrowLeft size={24} color="#374151" />
                 </TouchableOpacity>
-                <View>
-                    <Text className="text-lg font-bold text-gray-800">{device.friendlyName || device.macAddress}</Text>
+                <View className="flex-1">
+                     <View className="flex-row items-center">
+                        <Text className="text-lg font-bold text-gray-800 mr-2">{device.friendlyName || device.macAddress}</Text>
+                        <TouchableOpacity onPress={() => setIsRenameModalOpen(true)}>
+                            <Sprout size={16} color="gray" /> 
+                         </TouchableOpacity>
+                     </View>
                     <Text className={`text-xs ${device.online ? 'text-green-600' : 'text-gray-400'}`}>
                         {device.online ? '● Online' : '○ Offline'}
                     </Text>
@@ -387,6 +417,44 @@ export default function DeviceDetailsScreen() {
                         )}
                     />
                 </SafeAreaView>
+            </Modal>
+
+            {/* Rename Modal */}
+            <Modal
+                visible={isRenameModalOpen}
+                animationType="fade"
+                transparent={true}
+                onRequestClose={() => setIsRenameModalOpen(false)}
+            >
+                <View className="flex-1 bg-black/50 justify-center items-center p-6">
+                    <View className="bg-white p-6 rounded-2xl w-full max-w-sm">
+                        <Text className="text-lg font-bold text-gray-800 mb-4">Rename Device</Text>
+                        <View className="bg-gray-100 p-3 rounded-xl mb-4">
+                             <TextInput
+                                value={newName}
+                                onChangeText={setNewName}
+                                placeholder="Enter new name"
+                                className="text-gray-800"
+                                autoFocus
+                             />
+                        </View>
+                        <View className="flex-row justify-end gap-2">
+                             <TouchableOpacity 
+                                onPress={() => setIsRenameModalOpen(false)}
+                                className="px-4 py-2"
+                             >
+                                 <Text className="text-gray-500 font-bold">Cancel</Text>
+                             </TouchableOpacity>
+                             <TouchableOpacity 
+                                onPress={() => renameMutation.mutate(newName)}
+                                className="bg-green-600 px-4 py-2 rounded-lg"
+                                disabled={renameMutation.isPending}
+                             >
+                                 <Text className="text-white font-bold">{renameMutation.isPending ? 'Saving...' : 'Save'}</Text>
+                             </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
             </Modal>
         </SafeAreaView>
     );
