@@ -11,6 +11,7 @@ import LoginScreen from './src/screens/LoginScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
 import ProvisionScreen from './src/screens/ProvisionScreen';
+import DeviceDetailsScreen from './src/screens/DeviceDetailsScreen';
 
 const Stack = createNativeStackNavigator();
 const AuthStack = createNativeStackNavigator();
@@ -31,6 +32,7 @@ function AppNavigator() {
   return (
     <AppStack.Navigator screenOptions={{ headerShown: false }}>
       <AppStack.Screen name="Dashboard" component={DashboardScreen} />
+      <AppStack.Screen name="DeviceDetails" component={DeviceDetailsScreen} />
       <AppStack.Screen name="Provision" component={ProvisionScreen} />
     </AppStack.Navigator>
   );

@@ -12,22 +12,22 @@ export default function DashboardScreen({ navigation }: any) {
   const renderDevice = ({ item }: { item: Device }) => (
     <TouchableOpacity 
       className="bg-white p-4 mb-3 rounded-xl shadow-sm border border-gray-100 flex-row items-center justify-between"
-      onPress={() => console.log("Navigate to details", item.id)}
+      onPress={() => navigation.navigate('DeviceDetails', { device: item })}
     >
       <View className="flex-row items-center space-x-4">
-        <View className={`w-10 h-10 rounded-full items-center justify-center ${item.status === 'ONLINE' ? 'bg-green-100' : 'bg-gray-100'}`}>
-           <Power size={20} color={item.status === 'ONLINE' ? '#16a34a' : '#9ca3af'} />
+        <View className={`w-10 h-10 rounded-full items-center justify-center ${item.online ? 'bg-green-100' : 'bg-gray-100'}`}>
+           <Power size={20} color={item.online ? '#16a34a' : '#9ca3af'} />
         </View>
         <View>
-          <Text className="font-bold text-gray-800 text-lg">{item.name}</Text>
+          <Text className="font-bold text-gray-800 text-lg">{item.friendlyName}</Text>
           <View className="flex-row items-center">
-            {item.status === 'ONLINE' ? (
+            {item.online ? (
                 <Wifi size={14} color="#16a34a" />
             ) : (
                 <WifiOff size={14} color="#ef4444" />
             )}
-            <Text className={`ml-1 text-xs ${item.status === 'ONLINE' ? 'text-green-600' : 'text-red-500'}`}>
-                {item.status}
+            <Text className={`ml-1 text-xs ${item.online ? 'text-green-600' : 'text-red-500'}`}>
+                {item.online ? 'ONLINE' : 'OFFLINE'}
             </Text>
           </View>
         </View>
@@ -49,7 +49,7 @@ export default function DashboardScreen({ navigation }: any) {
 
       <FlatList
         data={devices}
-        keyExtractor={(item) => item.id.toString()}
+        keyExtractor={(item) => item.macAddress}
         renderItem={renderDevice}
         contentContainerStyle={{ padding: 20 }}
         refreshControl={<RefreshControl refreshing={isLoading} onRefresh={refetch} />}
