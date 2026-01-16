@@ -1,4 +1,4 @@
-import type { PlantProfile } from '../types';
+import { PlantProfile } from '../types';
 
 export const PLANT_PROFILES: PlantProfile[] = [
     {
