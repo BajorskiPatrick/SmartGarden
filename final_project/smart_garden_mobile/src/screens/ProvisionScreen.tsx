@@ -8,7 +8,7 @@ import { api } from '../lib/axios';
 
 export default function ProvisionScreen({ navigation }: any) {
   const { username } = useAuth();
-  const { scanAndConnect, provisionDevice, waitForAuth, device, status, error, isScanning } = useBleProvisioning();
+  const { startScan, scannedDevices, connectToDevice, provisionDevice, waitForAuth, device, status, error, isScanning } = useBleProvisioning();
   
   const [ssid, setSsid] = useState('');
   const [password, setPassword] = useState('');
@@ -21,9 +21,7 @@ export default function ProvisionScreen({ navigation }: any) {
     }
   }, [status]);
 
-  const handleStartScan = () => {
-    scanAndConnect();
-  };
+
 
   // BLE MAC is usually +2 from WiFi Station MAC on ESP32
   // We need to register the WiFi MAC on the backend so topics match
@@ -91,19 +89,48 @@ export default function ProvisionScreen({ navigation }: any) {
             {device ? (
                 <View className="bg-green-50 p-4 rounded-xl border border-green-200 flex-row items-center">
                     <Check size={20} color="green" />
-                    <Text className="ml-2 text-green-700 font-bold">Connected to {device.name}</Text>
+                    <Text className="ml-2 text-green-700 font-bold">Connected to {device.name || device.id}</Text>
                 </View>
             ) : (
                 <View>
-                    <Text className="text-gray-500 mb-4">Ensure your SmartGarden device is defined in specific provision mode (Blue LED blinking).</Text>
-                    <TouchableOpacity 
-                        className={`bg-blue-600 p-4 rounded-xl flex-row justify-center items-center ${isScanning ? 'opacity-50' : ''}`}
-                        onPress={handleStartScan}
-                        disabled={isScanning}
-                    >
-                        {isScanning ? <ActivityIndicator color="white" className="mr-2" /> : <Bluetooth color="white" className="mr-2" />}
-                        <Text className="text-white font-bold">{isScanning ? 'Scanning...' : 'Start BLE Scan'}</Text>
-                    </TouchableOpacity>
+                    <Text className="text-gray-500 mb-4">Make sure your SmartGarden is in provisioning mode (Blue LED blinking).</Text>
+                    
+                    {!isScanning && scannedDevices.length === 0 && (
+                        <TouchableOpacity 
+                            className="bg-blue-600 p-4 rounded-xl flex-row justify-center items-center"
+                            onPress={startScan}
+                        >
+                            <Bluetooth color="white" className="mr-2" />
+                            <Text className="text-white font-bold">Search for Devices</Text>
+                        </TouchableOpacity>
+                    )}
+
+                    {isScanning && (
+                        <View className="flex-row items-center justify-center p-4">
+                            <ActivityIndicator color="#2563eb" className="mr-2" />
+                            <Text className="text-blue-600">Scanning for Smart Gardens...</Text>
+                        </View>
+                    )}
+
+                    {scannedDevices.length > 0 && (
+                        <View className="mt-4 space-y-2">
+                             <Text className="text-xs font-bold text-gray-400 uppercase">Found Devices</Text>
+                             {scannedDevices.map(d => (
+                                 <TouchableOpacity 
+                                    key={d.id} 
+                                    className="bg-white border border-gray-200 p-4 rounded-xl flex-row justify-between items-center shadow-sm"
+                                    onPress={() => connectToDevice(d)}
+                                 >
+                                     <View>
+                                         <Text className="font-bold text-gray-800">{d.name || "Unknown Device"}</Text>
+                                         <Text className="text-xs text-gray-400">{d.id}</Text>
+                                     </View>
+                                     <Text className="text-blue-600 font-medium">Connect</Text>
+                                 </TouchableOpacity>
+                             ))}
+                        </View>
+                    )}
+                    
                     {error && <Text className="text-red-500 mt-2">{error}</Text>}
                 </View>
             )}

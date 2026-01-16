@@ -74,9 +74,12 @@ export const useBleProvisioning = () => {
         return true;
     };
 
-    const scanAndConnect = async () => {
+    const [scannedDevices, setScannedDevices] = useState<Device[]>([]);
+
+    const startScan = async () => {
         setError(null);
         setStatus('scanning');
+        setScannedDevices([]);
 
         // 1. Check/Request Permissions
         const hasPerms = await requestPermissions();
@@ -95,68 +98,73 @@ export const useBleProvisioning = () => {
                 }
             } catch (e) {
                 console.warn("Failed to enable Bluetooth programmatically", e);
-                // Continue anyway, maybe user enabled it manually
             }
         }
 
-        // 3. Start Scan (Scan ALL devices, filter by name in callback)
-        // Web app uses: filters: [{ namePrefix: 'SMART_GARDEN_PROV' }]
-        managerRef.current.startDeviceScan(null, null, async (err, scannedDevice) => {
+        // 3. Start Scan 
+        managerRef.current.startDeviceScan(null, null, (err, scannedDevice) => {
             if (err) {
-                if (err.errorCode === 601) { // LocationServicesDisabled
+                if (err.errorCode === 601) {
                     setError("Location services are disabled. Please enable GPS.");
                     return;
                 }
-                // Ignore other scanning errors (like scanning in progress)
                 console.log("Scan note:", err.message);
                 return;
             }
 
-            if (scannedDevice && (
-                scannedDevice.name === 'SMART_GARDEN_PROV' ||
-                scannedDevice.localName === 'SMART_GARDEN_PROV'
-            )) {
-                console.log("Found Device:", scannedDevice.id, scannedDevice.name);
-                managerRef.current.stopDeviceScan();
-                setIsScanning(false);
-                setStatus('connecting');
-
-                try {
-                    const connectedDevice = await scannedDevice.connect();
-                    await connectedDevice.discoverAllServicesAndCharacteristics();
-
-                    // Request higher MTU for Android (default is 23 bytes, too small for URLs)
-                    if (Platform.OS === 'android') {
-                        try {
-                            const mtu = await connectedDevice.requestMTU(512);
-                            console.log("MTU Negotiated:", mtu);
-                        } catch (mtuError) {
-                            console.warn("MTU Request failed", mtuError);
+            if (scannedDevice && scannedDevice.name) {
+                // Filter duplicates and only show relevant devices
+                setScannedDevices(prev => {
+                    const exists = prev.find(d => d.id === scannedDevice.id);
+                    if (!exists) {
+                        // Filter by name prefix if desired, or show all with names
+                        if (scannedDevice.name?.includes('SMART_GARDEN') || scannedDevice.name?.includes('ESP32')) {
+                            return [...prev, scannedDevice];
                         }
                     }
-
-                    // Dynamically find the correct Service UUID (Standard or Reversed)
-                    const services = await connectedDevice.services();
-                    const SERVICE_UUID_REV = 'efcdab90-7856-3412-efcd-ab9078563412';
-                    const foundService = services.find(s => s.uuid === SERVICE_UUID || s.uuid === SERVICE_UUID_REV);
-
-                    if (foundService) {
-                        console.log("Found Service UUID:", foundService.uuid);
-                        setServiceUUID(foundService.uuid);
-                    } else {
-                        console.warn("Target Service not found in discovery, defaulting to standard.");
-                    }
-
-                    setDevice(connectedDevice);
-                    setStatus('connected');
-                } catch (e: any) {
-                    setError("Connection failed: " + e.message);
-                    setStatus('error');
-                    setIsScanning(false); // Ensure UI resets
-                }
+                    return prev;
+                });
             }
         });
         setIsScanning(true);
+    };
+
+    const stopScan = () => {
+        managerRef.current.stopDeviceScan();
+        setIsScanning(false);
+    };
+
+    const connectToDevice = async (selectedDevice: Device) => {
+        stopScan();
+        setStatus('connecting');
+        try {
+            const connectedDevice = await selectedDevice.connect();
+            await connectedDevice.discoverAllServicesAndCharacteristics();
+
+            // Request higher MTU for Android 
+            if (Platform.OS === 'android') {
+                try {
+                    await connectedDevice.requestMTU(512);
+                } catch (mtuError) {
+                    console.warn("MTU Request failed", mtuError);
+                }
+            }
+
+            // Dynamically find Service UUID
+            const services = await connectedDevice.services();
+            const SERVICE_UUID_REV = 'efcdab90-7856-3412-efcd-ab9078563412';
+            const foundService = services.find(s => s.uuid === SERVICE_UUID || s.uuid === SERVICE_UUID_REV);
+
+            if (foundService) {
+                setServiceUUID(foundService.uuid);
+            }
+
+            setDevice(connectedDevice);
+            setStatus('connected');
+        } catch (e: any) {
+            setError("Connection failed: " + e.message);
+            setStatus('error');
+        }
     };
 
     const waitForAuth = async (): Promise<boolean> => {
@@ -248,5 +256,5 @@ export const useBleProvisioning = () => {
         }
     };
 
-    return { scanAndConnect, provisionDevice, waitForAuth, device, status, error, isScanning };
+    return { startScan, stopScan, connectToDevice, scannedDevices, provisionDevice, waitForAuth, device, status, error, isScanning };
 };
