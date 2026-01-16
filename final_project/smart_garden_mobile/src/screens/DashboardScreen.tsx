@@ -2,7 +2,8 @@ import React from 'react';
 import { View, Text, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
-import { useDevices, Device } from '../hooks/useDevices';
+import { useDevices } from '../hooks/useDevices';
+import { Device } from '../types';
 import { Plus, Power, Wifi, WifiOff, LogOut } from 'lucide-react-native';
 
 export default function DashboardScreen({ navigation }: any) {
@@ -48,7 +49,10 @@ export default function DashboardScreen({ navigation }: any) {
       </View>
 
       <FlatList
-        data={devices}
+        data={devices?.filter(d => {
+            console.log("Device Filter Check:", d.friendlyName, d.lastSeen);
+            return d.lastSeen && d.lastSeen !== "null";
+        }) || []}
         keyExtractor={(item) => item.macAddress}
         renderItem={renderDevice}
         contentContainerStyle={{ padding: 20 }}

@@ -155,6 +155,15 @@ export default function ProvisionScreen({ navigation }: any) {
                         secureTextEntry
                     />
                     
+                    {status === 'awaiting_auth' && (
+                        <View className="mb-4 bg-yellow-100 border-l-4 border-yellow-500 p-4 rounded shadow-sm animate-pulse">
+                            <Text className="text-yellow-800 font-bold text-lg mb-1">⚠️ ACTION REQUIRED</Text>
+                            <Text className="text-yellow-700">
+                                Please press the <Text className="font-bold">BOOT</Text> button on your Smart Garden device NOW to confirm authorization.
+                            </Text>
+                        </View>
+                    )}
+
                     <TouchableOpacity 
                         className={`bg-green-600 p-4 rounded-xl mt-2 ${status === 'provisioning' || status === 'awaiting_auth' || loadingCreds ? 'opacity-50' : ''}`}
                         onPress={handleProvision}
@@ -163,7 +172,7 @@ export default function ProvisionScreen({ navigation }: any) {
                         {status === 'provisioning' || loadingCreds ? (
                             <ActivityIndicator color="white" />
                         ) : status === 'awaiting_auth' ? (
-                            <Text className="text-white text-center font-bold">Press BOOT Button on Device...</Text>
+                            <Text className="text-white text-center font-bold">Waiting for Button Press...</Text>
                         ) : (
                             <Text className="text-white text-center font-bold">Send Configuration</Text>
                         )}
