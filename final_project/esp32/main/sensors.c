@@ -11,6 +11,7 @@
 #include "freertos/task.h"
 #include "esp_rom_sys.h" 
 #include <sys/time.h>    
+#include "esp_timer.h"
 
 #include "mqtt_app.h"
 #include "alert_limiter.h"
@@ -303,8 +304,9 @@ void sensors_read(telemetry_data_t *data) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     data->timestamp = (int64_t)tv.tv_sec * 1000 + (tv.tv_usec / 1000);
+    data->monotonic_ms = esp_timer_get_time() / 1000;
     
-    ESP_LOGI(TAG, "Odczyt: T:%.1f H:%.1f P:%.0f L:%.1f S:%d W:%d", 
+    ESP_LOGI(TAG, "Odczyt: T:%.1f H:%.1f P:%.0f L:%.1f S:%d W:%d (Mono: %lld)", 
              data->temp, data->humidity, data->pressure, data->light_lux, 
-             data->soil_moisture, data->water_ok);
+             data->soil_moisture, data->water_ok, data->monotonic_ms);
 }

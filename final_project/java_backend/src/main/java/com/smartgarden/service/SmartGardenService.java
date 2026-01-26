@@ -64,8 +64,14 @@ public class SmartGardenService {
             Measurement measurement = new Measurement();
             measurement.setDevice(device);
 
-            // Use timestamp from payload if available (epoch millis)
-            if (root.has("timestamp")) {
+            // Use relative time if available (fixes synchronization issues)
+            if (root.has("seconds_ago")) {
+                long secondsAgo = root.get("seconds_ago").asLong();
+                // We use server's "now" minus the age of the measurement
+                measurement.setTimestamp(LocalDateTime.now().minusSeconds(secondsAgo));
+            } 
+            // Fallback to absolute timestamp from payload (epoch millis)
+            else if (root.has("timestamp")) {
                 long ts = root.get("timestamp").asLong();
                 measurement.setTimestamp(LocalDateTime.ofInstant(Instant.ofEpochMilli(ts), ZoneId.systemDefault()));
             } else {

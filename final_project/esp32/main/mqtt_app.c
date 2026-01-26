@@ -19,6 +19,7 @@
 
 #include <math.h>
 #include <sys/time.h>
+#include "esp_timer.h"
 
 static const char *TAG = "MQTT_APP";
 
@@ -483,6 +484,12 @@ void mqtt_app_send_telemetry_masked(telemetry_data_t *data, telemetry_fields_mas
     cJSON_AddStringToObject(root, "device", s_device_id);
     cJSON_AddStringToObject(root, "user", s_user_id);
     cJSON_AddNumberToObject(root, "timestamp", data->timestamp);
+
+    // Calculate relative time (seconds ago)
+    int64_t now_monotonic = esp_timer_get_time() / 1000;
+    int64_t diff_ms = now_monotonic - data->monotonic_ms;
+    if (diff_ms < 0) diff_ms = 0; // Should not happen with monotonic clock
+    cJSON_AddNumberToObject(root, "seconds_ago", diff_ms / 1000);
 
     cJSON *sensors = cJSON_CreateObject();
     telemetry_fields_mask_t available = sensors_get_available_fields_mask();
