@@ -407,15 +407,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
 
         s_retry_num++;
-        // If we failed 3 times, re-enable BLE Provisioning so user can correct credentials
-        if (s_retry_num >= 3) {
-             ESP_LOGW(LOG_TAG, "WiFi Connection failed 3 times (s_retry_num=%d). Re-enabling BLE Provisioning.", s_retry_num);
-             // Verify if we should start window (safe to call even if already open, but good to check)
-             if (!ble_client_connected) {
-                 start_provisioning_window();
-             }
-             // We continue to retry WiFi in background though
-        }
+        // Removed: automatic provisioning after 3 failed attempts (was breaking record buffering)
 
         uint32_t suppressed = 0;
         if (alert_limiter_allow("wifi.disconnected", esp_log_timestamp(), 60 * 1000, &suppressed)) {
