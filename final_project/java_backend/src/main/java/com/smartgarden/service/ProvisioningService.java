@@ -83,6 +83,7 @@ public class ProvisioningService {
                 measurementRepository.deleteByDevice_MacAddress(macAddress);
                 alertRepository.deleteByDevice_MacAddress(macAddress);
                 deviceSettingsRepository.deleteByDevice_MacAddress(macAddress);
+                device.setActiveProfileName(null);
                 // Note: We do not delete the device entity itself, just reassign it below.
             } else {
                 log.info("Re-provisioning device {} for same user {}. Preserving data.", macAddress, username);

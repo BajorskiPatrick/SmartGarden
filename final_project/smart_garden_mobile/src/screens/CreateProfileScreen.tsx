@@ -40,6 +40,12 @@ export default function CreateProfileScreen() {
     const handleSubmit = () => {
         if (!form.name) return Alert.alert("Error", "Name is required");
 
+        // Validation: Min < Max
+        if (Number(form.temp_min) > Number(form.temp_max)) return Alert.alert("Validation Error", "Temperature Min cannot be greater than Max");
+        if (Number(form.soil_min) > Number(form.soil_max)) return Alert.alert("Validation Error", "Soil Moisture Min cannot be greater than Max");
+        if (Number(form.hum_min) > Number(form.hum_max)) return Alert.alert("Validation Error", "Humidity Min cannot be greater than Max");
+        if (Number(form.light_min) > Number(form.light_max)) return Alert.alert("Validation Error", "Light Min cannot be greater than Max");
+
         const payload = {
             name: form.name,
             description: form.description,
