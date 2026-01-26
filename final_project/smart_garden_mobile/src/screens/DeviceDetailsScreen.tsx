@@ -172,7 +172,7 @@ export default function DeviceDetailsScreen() {
         );
     }
 
-    const StatCard = ({ icon, label, value, unit, baseColor, min, max }: any) => {
+    const StatCard = ({ icon, label, value, unit, baseColor, min, max, sensorType, chartColor }: any) => {
         let statusColor = baseColor; // Default
         let warning = null;
         let isError = false;
@@ -193,7 +193,16 @@ export default function DeviceDetailsScreen() {
         }
 
         return (
-            <View className={`p-4 rounded-xl shadow-sm border w-[48%] mb-4 ${isError ? 'border-red-300 bg-red-50' : 'border-gray-100 bg-white'}`}>
+            <TouchableOpacity 
+                className={`p-4 rounded-xl shadow-sm border w-[48%] mb-4 ${isError ? 'border-red-300 bg-red-50' : 'border-gray-100 bg-white'}`}
+                onPress={() => navigation.navigate('TelemetryChart' as never, {
+                    macAddress: mac,
+                    sensorType: sensorType,
+                    sensorLabel: label,
+                    unit: unit,
+                    color: chartColor
+                } as never)}
+            >
                 <View className="flex-row justify-between">
                     <View className={`w-8 h-8 rounded-full items-center justify-center mb-2 ${baseColor.replace('bg-', 'bg-opacity-20 ')}`}>
                         {icon}
@@ -214,7 +223,7 @@ export default function DeviceDetailsScreen() {
                        <Text className="text-[10px] text-gray-400">Target: {min}-{max}</Text>
                    </View>
                 )}
-            </View>
+            </TouchableOpacity>
         );
     };
 
@@ -253,6 +262,8 @@ export default function DeviceDetailsScreen() {
                         baseColor="bg-red-50"
                         min={settings?.temp_min}
                         max={settings?.temp_max}
+                        sensorType="temperature"
+                        chartColor="rgba(239, 68, 68, 1)"
                     />
                     <StatCard 
                         icon={<Droplets size={18} color="#3b82f6" />}
@@ -262,6 +273,8 @@ export default function DeviceDetailsScreen() {
                         baseColor="bg-blue-50"
                         min={settings?.soil_min}
                         max={settings?.soil_max}
+                        sensorType="soilMoisture"
+                        chartColor="rgba(59, 130, 246, 1)"
                     />
                     <StatCard 
                         icon={<Sun size={18} color="#eab308" />}
@@ -271,6 +284,8 @@ export default function DeviceDetailsScreen() {
                         baseColor="bg-yellow-50"
                         min={settings?.light_min}
                         max={settings?.light_max}
+                        sensorType="lightLux"
+                        chartColor="rgba(234, 179, 8, 1)"
                     />
                     <StatCard 
                         icon={<Activity size={18} color="#a855f7" />}
@@ -280,6 +295,8 @@ export default function DeviceDetailsScreen() {
                         baseColor="bg-purple-50"
                         min={settings?.hum_min}
                         max={settings?.hum_max}
+                        sensorType="humidity"
+                        chartColor="rgba(168, 85, 247, 1)"
                     />
                 </View>
 

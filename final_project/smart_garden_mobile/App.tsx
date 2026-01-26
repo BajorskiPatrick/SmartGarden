@@ -16,6 +16,7 @@ import ProvisionScreen from './src/screens/ProvisionScreen';
 import DeviceDetailsScreen from './src/screens/DeviceDetailsScreen';
 import ProfilesScreen from './src/screens/ProfilesScreen';
 import CreateProfileScreen from './src/screens/CreateProfileScreen';
+import TelemetryChartScreen from './src/screens/TelemetryChartScreen';
 
 const Stack = createNativeStackNavigator();
 const AuthStack = createNativeStackNavigator();
@@ -69,6 +70,7 @@ function AppNavigator() {
       <AppStack.Screen name="DeviceDetails" component={DeviceDetailsScreen} />
       <AppStack.Screen name="Provision" component={ProvisionScreen} />
       <AppStack.Screen name="CreateProfile" component={CreateProfileScreen} />
+      <AppStack.Screen name="TelemetryChart" component={TelemetryChartScreen} />
     </AppStack.Navigator>
   );
 }
