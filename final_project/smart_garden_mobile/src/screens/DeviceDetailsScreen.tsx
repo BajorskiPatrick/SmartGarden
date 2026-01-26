@@ -3,10 +3,11 @@ import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator, Alert, Ref
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { ArrowLeft, Thermometer, Droplets, Sun, Activity, Trash2, Sprout, ChevronRight, X, Waves, AlertTriangle } from 'lucide-react-native';
+import { PLANT_PROFILES } from '../lib/plantProfiles';
 import { Device, PlantProfile, DeviceSettings } from '../types';
 import { api } from '../lib/axios';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { PLANT_PROFILES } from '../lib/plantProfiles';
+
 
 export default function DeviceDetailsScreen() {
     const route = useRoute();
@@ -50,6 +51,15 @@ export default function DeviceDetailsScreen() {
         },
         initialData: initialDevice,
         refetchInterval: 5000, 
+    });
+
+    // Fetch Profiles
+    const { data: profiles } = useQuery<PlantProfile[]>({
+        queryKey: ['profiles'],
+        queryFn: async () => {
+            const res = await api.get('/profiles');
+            return res.data;
+        }
     });
 
     // Update newName when device loads
@@ -391,7 +401,7 @@ export default function DeviceDetailsScreen() {
                         </TouchableOpacity>
                     </View>
                     <FlatList
-                        data={PLANT_PROFILES}
+                        data={[...(profiles || []), ...PLANT_PROFILES]}
                         keyExtractor={item => item.id!}
                         contentContainerStyle={{ padding: 20 }}
                         renderItem={({ item }) => (
