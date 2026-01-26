@@ -7,7 +7,7 @@ import { Link } from 'react-router-dom';
 import { useDashboardWebSocket } from '../../hooks/useDashboardWebSocket';
 
 export function DashboardPage() {
-  useDashboardWebSocket(); // Start listening for updates
+  useDashboardWebSocket();
 
   const { data: devices, isLoading, error } = useQuery<Device[]>({
     queryKey: ['devices'],

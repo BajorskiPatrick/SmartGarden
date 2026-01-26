@@ -18,7 +18,7 @@
 
 static const char *TAG = "SENSORS";
 
-// --- KONFIGURACJA SPRZĘTOWA ---
+// --- HARDWARE CONFIG ---
 #define I2C_MASTER_SCL_IO           22
 #define I2C_MASTER_SDA_IO           21
 #define I2C_MASTER_NUM              I2C_NUM_0
@@ -26,16 +26,15 @@ static const char *TAG = "SENSORS";
 
 #define WATER_LEVEL_GPIO            GPIO_NUM_18
 
-// --- NOWA KONFIGURACJA DLA POWER SAVE ---
+// --- POWER SAVE CONFIG ---
 #define SOIL_POWER_GPIO             GPIO_NUM_27  
 #define SOIL_ADC_CHANNEL            ADC_CHANNEL_6
 #define SOIL_DRY_VAL                2800            
 #define SOIL_WET_VAL                1200            
 
-// Czas stabilizacji czujnika po włączeniu zasilania (ms)
 #define SENSOR_POWER_UP_DELAY_MS    50 
 
-// Zmienne globalne modułu (statyczne)
+// Module globals
 static veml7700_handle_t veml_sensor;
 static bmp280_t bme280_dev;
 static adc_oneshot_unit_handle_t adc1_handle;
@@ -53,9 +52,9 @@ static long map_val(long x, long in_min, long in_max, long out_min, long out_max
     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
-// Funkcja resetująca magistralę I2C
+// I2C bus reset function
 static void i2c_bus_reset(void) {
-    ESP_LOGI(TAG, "Wykonuję reset magistrali I2C...");
+    ESP_LOGI(TAG, "Resetting I2C bus...");
     gpio_config_t io_conf = {
         .intr_type = GPIO_INTR_DISABLE,
         .mode = GPIO_MODE_OUTPUT,
@@ -137,11 +136,11 @@ static esp_err_t bme280_sensor_init(void)
 esp_err_t sensors_init(void) {
     esp_err_t res = ESP_OK;
 
-    // 1. Inicjalizacja GPIO i ADC
+    // 1. Init GPIO and ADC
     water_sensor_init();
     soil_sensor_init();
 
-    // Reset I2C przed sterownikiem
+    // Reset I2C before driver init
     i2c_bus_reset();
 
     // 2. I2C (i2cdev library init)
@@ -189,10 +188,10 @@ telemetry_fields_mask_t sensors_get_available_fields_mask(void) {
 }
 
 void sensors_get_water_status(int *water_ok) {
-    // Włączenie Pull-Up (tylko na czas odczytu)
+    // Enable Pull-Up (only for read)
     gpio_set_pull_mode(WATER_LEVEL_GPIO, GPIO_PULLUP_ONLY);
     
-    // Krótkie opóźnienie dla stabilizacji sygnału
+    // Short delay for stability
     esp_rom_delay_us(50); 
 
     int pin_level = gpio_get_level(WATER_LEVEL_GPIO);
@@ -207,19 +206,19 @@ void sensors_get_water_status(int *water_ok) {
 }
 
 void sensors_read(telemetry_data_t *data) {
-    // sekwencja:  Power Up -> Read -> Power Down
+    // Sequence: Power Up -> Read -> Power Down
     int raw_adc = 0;
     
-    // Włączanie zasilania czujnika
+    // Power ON
     gpio_set_level(SOIL_POWER_GPIO, 1);
     
-    // Czekaj na ustabilizowanie się elektroniki czujnika (50-100ms zazwyczaj wystarcza)
+    // Wait for stabilization
     vTaskDelay(pdMS_TO_TICKS(SENSOR_POWER_UP_DELAY_MS));
 
-    // Odczyt
+    // Read
     esp_err_t soil_err = adc_oneshot_read(adc1_handle, SOIL_ADC_CHANNEL, &raw_adc);
     
-    // Wyłączenie zasilania czujnika
+    // Power OFF
     gpio_set_level(SOIL_POWER_GPIO, 0);
 
     if (soil_err == ESP_OK) {

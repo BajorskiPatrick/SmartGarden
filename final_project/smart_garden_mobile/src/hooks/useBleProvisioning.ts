@@ -225,7 +225,6 @@ export const useBleProvisioning = () => {
         try {
             console.log("Writing Provisioning Data...", data);
 
-            // Helper to write
             const write = async (uuid: string, val: string, label: string) => {
                 console.log(`Writing ${label} (${val.length} chars)...`);
                 await device.writeCharacteristicWithResponseForService(serviceUUID, uuid, toBase64(val));

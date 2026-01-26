@@ -39,8 +39,7 @@ typedef struct {
 static QueueHandle_t watering_req_queue = NULL;
 
 
-// Domyślne progi - "otwarte" (brak alertów)
-// Zmiana nazwy struktury na device_settings_t
+// Default open thresholds
 typedef struct {
     float temp_min;
     float temp_max;
@@ -64,8 +63,9 @@ static device_settings_t settings = {
     .soil_max = INT_MAX,
     .light_min = -INFINITY,
     .light_max = INFINITY,
-    .watering_duration_sec = 5, // Domyślnie 5 sekund
-    .measurement_interval_sec = 60 // Domyślnie 60 sekund
+    .light_max = INFINITY,
+    .watering_duration_sec = 5,
+    .measurement_interval_sec = 60
 };
 
 // Flagi stanów alarmowych (zapobiega spamowaniu alertami)
@@ -127,7 +127,7 @@ static telemetry_fields_mask_t parse_fields_mask_from_json(cJSON *root) {
     telemetry_fields_mask_t mask = 0;
     if (!root) return TELEMETRY_FIELDS_ALL;
 
-    // Wspieramy: {"field":"air_temperature_c"} lub {"fields":["air_temperature_c", ...]}
+    // Support: {"field":"air_temperature_c"} or {"fields":["air_temperature_c", ...]}
     cJSON *field = cJSON_GetObjectItem(root, "field");
     if (cJSON_IsString(field) && field->valuestring) {
         const char *s = field->valuestring;
@@ -163,7 +163,7 @@ static telemetry_fields_mask_t parse_fields_mask_from_json(cJSON *root) {
 void check_thresholds(telemetry_data_t *data) {
     if (!mqtt_app_is_connected()) return;
 
-    // 1. Temperatura
+    // 1. Temperature
     if (value_available_float(data->temp) && data->temp < settings.temp_min) {
         if (!alert_temp_so_far) {
             char msg[64];
@@ -273,7 +273,9 @@ static void watering_task(void *pvParameters) {
         snprintf(details, sizeof(details), "{\"duration\":%d,\"source\":\"%s\"}", req.duration, req.source);
         
         // Alert notify start
-        // Uwaga: wysyłanie alertu jest thread-safe (używa kolejki wewnętrznej w mqtt_app)
+        snprintf(details, sizeof(details), "{\"duration\":%d,\"source\":\"%s\"}", req.duration, req.source);
+        
+        // Alert sending is thread-safe
         if (strcmp(req.source, "auto") == 0) {
             mqtt_app_send_alert2_details("auto_watering_started", "info", "system", "Auto-watering started", details);
         } else {
@@ -283,7 +285,9 @@ static void watering_task(void *pvParameters) {
         ESP_LOGI(TAG, "START PODLEWANIA (%s, %d s)", req.source, req.duration);
         gpio_set_level(PUMP_GPIO, 1);
         
-        // Delay blokujący (teraz blokujemy TYLKO ten task, nie MQTT)
+        gpio_set_level(PUMP_GPIO, 1);
+        
+        // Blocking delay (only blocks this task)
         vTaskDelay(pdMS_TO_TICKS(req.duration * 1000));
         
         gpio_set_level(PUMP_GPIO, 0);
@@ -574,11 +578,10 @@ void publisher_task(void *pvParameters) {
         // 2. Weryfikacja progów
         check_thresholds(&data);
 
-        // 3. Wysłanie danych (lub buforowanie jeśli offline)
-        // Usunięto sprawdzenie mqtt_app_is_connected(), aby pozwolić na buforowanie wewnątrz funkcji
+        // 3. Send data (or buffer if offline)
         mqtt_app_send_telemetry(&data);
 
-        // Autopodlewanie logic
+        // Auto-watering logic
         struct timeval tv;
         gettimeofday(&tv, NULL);
         int64_t now = (int64_t)tv.tv_sec * 1000 + (tv.tv_usec / 1000);
@@ -603,8 +606,8 @@ void publisher_task(void *pvParameters) {
              ESP_LOGW(TAG, "Offline mode: 5 consecutive failures. Switching to 2h interval. (Buffered: %d)", buffered_count);
         }
 
-        // Zamiast vTaskDelay, czekamy na notyfikację (np. od MQTT_CONNECTED) LUB timeout
-        // Dzięki temu po odzyskaniu połączenia task wybudzi się natychmiast i wróci do normalnego cyklu.
+        // Wait for notification or timeout
+        // This allows immediate wake-up upon connection recovery
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(interval_ms));
     }
 }
@@ -643,11 +646,8 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
     
-    // NIE BLOKUJEMY na WiFi. Startujemy MQTT i zadania od razu.
-    // Jeśli brak sieci, MQTT wejdzie w tryb reconnect, a publisher będzie buforował dane.
-    // ESP_LOGI(TAG, "Oczekiwanie na połączenie WiFi...");
-    // wifi_prov_wait_connected();
-    ESP_LOGI(TAG, "Provisioning kompletny (lub założony). Start MQTT + pomiary niezależnie od statusu WiFi.");
+    // Do NOT block on WiFi. Start MQTT and tasks immediately.
+    ESP_LOGI(TAG, "Provisioning complete (or assumed). Starting MQTT + measurements.");
 
     // Inicjalizacja SNTP
     ESP_LOGI(TAG, "Inicjalizacja SNTP...");

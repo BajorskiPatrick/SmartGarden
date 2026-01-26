@@ -37,12 +37,8 @@ public class SmartGardenService {
     private final ObjectMapper objectMapper;
     private final MqttGateway mqttGateway;
 
-    // Map<MacAddress, Future> for async settings retrieval
     private final java.util.Map<String, java.util.concurrent.CompletableFuture<DeviceSettingsDto>> pendingSettingsRequests = new java.util.concurrent.ConcurrentHashMap<>();
 
-    /**
-     * Process incoming telemetry JSON.
-     */
     @Transactional
     public void processTelemetry(String payload) {
         try {
@@ -64,14 +60,10 @@ public class SmartGardenService {
             Measurement measurement = new Measurement();
             measurement.setDevice(device);
 
-            // Use relative time if available (fixes synchronization issues)
             if (root.has("seconds_ago")) {
                 long secondsAgo = root.get("seconds_ago").asLong();
-                // We use server's "now" minus the age of the measurement
                 measurement.setTimestamp(LocalDateTime.now().minusSeconds(secondsAgo));
-            } 
-            // Fallback to absolute timestamp from payload (epoch millis)
-            else if (root.has("timestamp")) {
+            } else if (root.has("timestamp")) {
                 long ts = root.get("timestamp").asLong();
                 measurement.setTimestamp(LocalDateTime.ofInstant(Instant.ofEpochMilli(ts), ZoneId.systemDefault()));
             } else {
@@ -102,11 +94,7 @@ public class SmartGardenService {
 
             measurementRepository.save(measurement);
             
-            // Broadcast telemetry to WebSocket topic
-            // We need to map Entity to DTO or send a custom object. 
-            // For simplicity, let's create a map or modify Measurement entity to be serializable safely? 
-            // Measurement entity has Circular ref (device). 
-            // Better to send a quick DTO.
+            measurementRepository.save(measurement);
             
             java.util.Map<String, Object> telemetryUpdate = new java.util.HashMap<>();
             telemetryUpdate.put("timestamp", measurement.getTimestamp().toString());
@@ -119,23 +107,12 @@ public class SmartGardenService {
             
             messagingTemplate.convertAndSend("/topic/device/" + mac + "/telemetry", telemetryUpdate);
 
-            // Also broadcast to User's private topic for Dashboard updates
-            if (!"unknown".equals(userId)) {
-                // Add device mac to payload for dashboard identification
-                telemetryUpdate.put("macAddress", mac); 
-                messagingTemplate.convertAndSend("/topic/user/" + userId + "/telemetry", telemetryUpdate);
-            }
-            
             log.info("Saved telemetry for device: {}", mac);
 
-        } catch (JsonProcessingException e) {
-            log.error("Failed to parse telemetry payload", e);
+        } catch (JsonProcessingException e) {            log.error("Failed to parse telemetry payload", e);
         }
     }
 
-    /**
-     * Process incoming alert JSON.
-     */
     @Transactional
     public void processAlert(String payload) {
         try {
@@ -181,9 +158,9 @@ public class SmartGardenService {
             alertRepository.save(alert);
             log.warn("Received ALERT from device {}: {}", mac, alert.getMessage());
             
-            // Broadcast valid Alert to WebSocket
-            // Need DTO or just send entity? Entity is fine if no recursion issue (Alert -> Device)
-            // But Alert has Device. Let's send a simplified map or DTO
+            alertRepository.save(alert);
+            log.warn("Received ALERT from device {}: {}", mac, alert.getMessage());
+            
             java.util.Map<String, Object> alertMsg = new java.util.HashMap<>();
             alertMsg.put("id", alert.getId());
             alertMsg.put("message", alert.getMessage());
@@ -191,11 +168,8 @@ public class SmartGardenService {
             alertMsg.put("timestamp", alert.getTimestamp().toString());
             alertMsg.put("deviceMac", mac);
             
-            // Send to device topic
             messagingTemplate.convertAndSend("/topic/device/" + mac + "/alerts", alertMsg);
             
-            // Send to user global topic (for bells)
-            // We need userId. We looked it up earlier: device.getUserId().
             if (device.getUserId() != null) {
                 messagingTemplate.convertAndSend("/topic/user/" + device.getUserId() + "/alerts", alertMsg);
             }
@@ -254,26 +228,21 @@ public class SmartGardenService {
     // --- Device Authoritative Settings Implementation ---
 
     public DeviceSettingsDto getDeviceSettings(String mac) {
-        // 1. Send GET request via MQTT
         Device device = getDeviceOrThrow(mac);
         String topic = String.format("garden/%s/%s/settings/get", device.getUserId(), mac);
         mqttGateway.sendToMqtt("{}", topic);
         log.info("Requested settings for device {}", mac);
 
-        // 2. Wait for response (async)
         java.util.concurrent.CompletableFuture<DeviceSettingsDto> future = new java.util.concurrent.CompletableFuture<>();
         pendingSettingsRequests.put(mac, future);
 
         try {
-            // Wait up to 5 seconds for response
             DeviceSettingsDto dto = future.get(5, java.util.concurrent.TimeUnit.SECONDS);
-            // Append local DB info (activeProfileName)
             dto.setActiveProfileName(device.getActiveProfileName());
             return dto;
         } catch (Exception e) {
             log.error("Timeout or error waiting for device settings for {}: {}", mac, e.getMessage());
             pendingSettingsRequests.remove(mac);
-            // Return empty settings (defaults) or indicate error.
             DeviceSettingsDto dto = new DeviceSettingsDto();
             dto.setActiveProfileName(device.getActiveProfileName());
             return dto;
@@ -286,10 +255,8 @@ public class SmartGardenService {
      */
     public void processSettingsState(String mac, String payload) {
         try {
-            // Parse payload directly to DTO
             DeviceSettingsDto dto = objectMapper.readValue(payload, DeviceSettingsDto.class);
 
-            // Complete the pending future if exists
             java.util.concurrent.CompletableFuture<DeviceSettingsDto> future = pendingSettingsRequests.remove(mac);
             if (future != null) {
                 future.complete(dto);
@@ -321,10 +288,7 @@ public class SmartGardenService {
             }
         }
         
-        // 2. Publish to MQTT directly
         try {
-            // We only send the configuration fields to ESP, not the metadata like 'activeProfileName' which ESP ignores anyway usually, but cleaner to keep.
-            // ESP usually uses Json library that ignores unknown fields, so sending extra field is safe.
             String payload = objectMapper.writeValueAsString(dto);
             String topic = String.format("garden/%s/%s/settings", device.getUserId(), mac);
             mqttGateway.sendToMqtt(payload, topic);
@@ -358,8 +322,7 @@ public class SmartGardenService {
     }
     @Transactional
     public void deleteDevice(String mac) {
-        // Normalize MAC just in case
-        String normalizedMac = normalizeMac(mac); // Need to make sure normalizeMac is accessible or inline it
+        String normalizedMac = normalizeMac(mac);
         
         log.info("Deleting device {} and all associated data", normalizedMac);
         
@@ -368,10 +331,8 @@ public class SmartGardenService {
         deviceSettingsRepository.deleteByDevice_MacAddress(normalizedMac);
         deviceRepository.deleteById(normalizedMac);
         
-        // Optional: Clean up MQTT ACLs if needed, but keeping it simple for now as per plan
     }
     
-    // Helper to ensure mac format match
     private String normalizeMac(String mac) {
          if (mac == null) return null;
          return mac.replace(":", "").toUpperCase();

@@ -36,10 +36,6 @@ public class DeviceController {
         return devices.stream().map(device -> {
             com.smartgarden.dto.DeviceSummaryDto dto = new com.smartgarden.dto.DeviceSummaryDto(device);
             
-            // Dynamic Online Status Calculation
-            // REVERTED: Just use device.isOnline() from DB (which is set to true on telemetry)
-            // dto.setOnline(device.isOnline()); // This is done in constructor already
-            
             // Get latest measurement
             org.springframework.data.domain.Pageable topOne = org.springframework.data.domain.PageRequest.of(0, 1, org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "timestamp"));
             List<Measurement> measurements = measurementRepository.findByDevice_MacAddress(device.getMacAddress(), topOne).getContent();
@@ -89,8 +85,7 @@ public class DeviceController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to,
             @PageableDefault(size = 20, sort = "timestamp", direction = org.springframework.data.domain.Sort.Direction.DESC) Pageable pageable) {
 
-        // IMPLEMENTACJA CONSUMPCJI ALERTÓW
-        // 1. Pobierz TYLKO nieprzeczytane (IsReadFalse)
+        // Fetch only unread alerts
         Page<Alert> alerts;
         String normalizedMac = normalizeMac(mac);
         if (from != null && to != null) {
@@ -100,8 +95,7 @@ public class DeviceController {
             alerts = alertRepository.findByDevice_MacAddressAndIsReadFalse(normalizedMac, pageable);
         }
 
-        // 2. Oznacz pobrane jako przeczytane
-        // (Tylko te, które są na bieżącej stronie wyników)
+        // Mark fetched alerts as read
         if (alerts.hasContent()) {
             alerts.getContent().forEach(alert -> alert.setIsRead(true));
             alertRepository.saveAll(alerts.getContent());

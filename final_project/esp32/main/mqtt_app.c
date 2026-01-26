@@ -412,7 +412,7 @@ static void add_bool_or_null(cJSON *obj, const char *key, bool include, bool ava
 }
 
 void mqtt_app_send_alert(const char* type, const char* message) {
-    // Legacy wrapper: keep old signature but send as v2 as well.
+void mqtt_app_send_alert(const char* type, const char* message) {
     mqtt_app_send_alert2(type, "warning", "app", message);
 }
 
@@ -443,7 +443,7 @@ void mqtt_app_send_telemetry(telemetry_data_t *data) {
 }
 
 void mqtt_app_send_telemetry_masked(telemetry_data_t *data, telemetry_fields_mask_t fields_mask) {
-    // Jeśli brak połączenia, buforujemy
+    // Buffer if offline
     if (!is_connected) {
         if (!s_telemetry_buffering) {
             s_telemetry_buffering = true;
@@ -476,7 +476,7 @@ void mqtt_app_send_telemetry_masked(telemetry_data_t *data, telemetry_fields_mas
         return;
     }
 
-    // Jeśli jest połączenie, wysyłamy
+    // Send if connected
     char topic[256];
     snprintf(topic, sizeof(topic), "garden/%s/%s/telemetry", s_user_id, s_device_id);
 

@@ -21,20 +21,18 @@ export default function DeviceDetailsScreen() {
     const [isRenameModalOpen, setIsRenameModalOpen] = useState(false);
     const [newName, setNewName] = useState(initialDevice?.friendlyName || "");
 
-    // Fetch latest data (DeviceInfo + Latest Telemetry)
     const { data: device, isLoading, refetch } = useQuery({
         queryKey: ['device', mac],
         queryFn: async () => {
-            // Parallel fetch
             const [deviceRes, telemetryRes] = await Promise.all([
                 api.get(`/devices/${mac}`),
                 api.get(`/devices/${mac}/telemetry?size=1`)
             ]);
             
             const deviceData = deviceRes.data;
-            const latestTelemetry = telemetryRes.data.content?.[0]; // Spring Data Page structure
+            const latestTelemetry = telemetryRes.data.content?.[0];
             
-            // Merge telemetry into device object if available
+            
             if (latestTelemetry) {
                 return {
                     ...deviceData,
@@ -53,7 +51,6 @@ export default function DeviceDetailsScreen() {
         refetchInterval: 5000, 
     });
 
-    // Fetch Profiles
     const { data: profiles } = useQuery<PlantProfile[]>({
         queryKey: ['profiles'],
         queryFn: async () => {
@@ -62,14 +59,12 @@ export default function DeviceDetailsScreen() {
         }
     });
 
-    // Update newName when device loads
     React.useEffect(() => {
         if (device?.friendlyName) {
             setNewName(device.friendlyName);
         }
     }, [device]);
 
-    // Fetch Device Settings for Ranges
     const { data: settings } = useQuery<DeviceSettings>({
         queryKey: ['settings', mac],
         queryFn: async () => {
@@ -78,7 +73,6 @@ export default function DeviceDetailsScreen() {
         }
     });
 
-    // Mutations
     const renameMutation = useMutation({
         mutationFn: async (name: string) => {
             await api.patch(`/devices/${mac}`, { friendlyName: name });
@@ -93,7 +87,6 @@ export default function DeviceDetailsScreen() {
         onError: () => Alert.alert("Error", "Failed to rename device")
     });
 
-    // Mutations
     const measureMutation = useMutation({
         mutationFn: async () => {
             await api.post(`/devices/${mac}/measure`);
@@ -108,7 +101,6 @@ export default function DeviceDetailsScreen() {
 
     const waterMutation = useMutation({
         mutationFn: async () => {
-             // This turns the LED Blue on the ESP32 while watering
             await api.post(`/devices/${mac}/water?duration=${waterDuration}`);
         },
         onSuccess: () => {
@@ -119,7 +111,6 @@ export default function DeviceDetailsScreen() {
 
     const deleteDeviceMutation = useMutation({
         mutationFn: async () => {
-             // Factory reset then delete
              try {
                 await api.post(`/devices/${mac}/settings`, { factory_reset: true });
              } catch (e) {
@@ -139,7 +130,6 @@ export default function DeviceDetailsScreen() {
         mutationFn: async (profile: PlantProfile) => {
             const { id, userId, name, description, ...settings } = profile;
             console.log("Applying profile:", name);
-            // Update settings on device
             await api.post(`/devices/${mac}/settings`, { ...settings, active_profile_name: name });
         },
         onSuccess: () => {
@@ -338,8 +328,8 @@ export default function DeviceDetailsScreen() {
                 <View className="bg-white p-4 rounded-xl border border-gray-100 mt-4">
                     <Text className="font-bold text-gray-800 mb-4">Manual Controls</Text>
                     
-                    {/* Measurement */}
-                    {/* Measurement */}
+                    <Text className="font-bold text-gray-800 mb-4">Manual Controls</Text>
+                    
                     <TouchableOpacity 
                         className={`bg-blue-600 p-4 rounded-xl flex-row items-center justify-center mb-4 ${measureMutation.isPending ? 'opacity-50' : ''}`}
                         onPress={() => measureMutation.mutate()}

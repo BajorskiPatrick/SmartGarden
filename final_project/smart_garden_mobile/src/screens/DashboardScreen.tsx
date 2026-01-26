@@ -49,10 +49,7 @@ export default function DashboardScreen({ navigation }: any) {
       </View>
 
       <FlatList
-        data={devices?.filter(d => {
-            console.log("Device Filter Check:", d.friendlyName, d.lastSeen);
-            return d.lastSeen && d.lastSeen !== "null";
-        }) || []}
+        data={devices?.filter(d => d.lastSeen && d.lastSeen !== "null") || []}
         keyExtractor={(item) => item.macAddress}
         renderItem={renderDevice}
         contentContainerStyle={{ padding: 20 }}

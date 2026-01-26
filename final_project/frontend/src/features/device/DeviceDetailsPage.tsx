@@ -26,34 +26,27 @@ export function DeviceDetailsPage() {
   const { data: telemetry } = useQuery<Measurement[]>({
     queryKey: ['telemetry', mac],
     queryFn: async () => {
-      // Get last 24h of data
       const response = await api.get(`/devices/${mac}/telemetry?size=50`);
-      return response.data.content; // Spring Page response
+      return response.data.content;
     },
     enabled: !!mac,
-    refetchInterval: false, // Disable polling, use WebSocket
+    refetchInterval: false,
   });
 
   const liveMeasurement = useTelemetryWebSocket(mac || '');
   const [displayData, setDisplayData] = useState<Measurement[]>([]);
 
-  // Sync with initial load
   useEffect(() => {
     if (telemetry) {
       setDisplayData(telemetry);
     }
   }, [telemetry]);
 
-  // Merge live updates
   useEffect(() => {
     if (liveMeasurement) {
       setDisplayData(prev => {
-        // Avoid duplicates if reusing timestamps, or just prepend
-        // Convert partial liveMeasurement to full Measurement if needed
-        // For now, assuming liveMeasurement matches enough of Measurement structure
         const newMeasurement = {
           ...liveMeasurement,
-          // Ensure defaults if missing from WS
           device: { macAddress: mac },
         } as unknown as Measurement;
 

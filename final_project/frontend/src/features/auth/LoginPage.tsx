@@ -16,7 +16,6 @@ export function LoginPage() {
     setError('');
     try {
       const response = await api.post('/auth/login', { username, password });
-      // Backend returns the token as a string directly
       const token = response.data;
       login(token, username);
       navigate('/');
