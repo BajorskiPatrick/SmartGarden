@@ -17,6 +17,8 @@ import java.util.UUID;
 public class PlantProfileController {
 
     private final PlantProfileRepository plantProfileRepository;
+    private final com.smartgarden.repository.DeviceRepository deviceRepository;
+    private final com.smartgarden.service.SmartGardenService smartGardenService;
 
     @GetMapping
     public List<PlantProfile> getUserProfiles() {
@@ -39,6 +41,16 @@ public class PlantProfileController {
                     if (!profile.getUserId().equals(userId)) {
                         return ResponseEntity.status(403).<Void>build();
                     }
+                    
+                    // Reset devices using this profile
+                    com.smartgarden.repository.DeviceRepository deviceRepository = this.deviceRepository; // Access injected repo
+                    java.util.List<com.smartgarden.entity.Device> devices = deviceRepository.findByUserIdAndActiveProfileName(userId, profile.getName());
+                    for (com.smartgarden.entity.Device device : devices) {
+                        device.setActiveProfileName(null);
+                        deviceRepository.save(device);
+                        smartGardenService.resetDeviceSettings(device.getMacAddress());
+                    }
+
                     plantProfileRepository.delete(profile);
                     return ResponseEntity.ok().<Void>build();
                 })
