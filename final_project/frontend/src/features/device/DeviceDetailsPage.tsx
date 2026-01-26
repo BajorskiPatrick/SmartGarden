@@ -98,7 +98,6 @@ export function DeviceDetailsPage() {
         </div>
       </div>
 
-      {/* Control Panel at top */}
       <div className="mb-6">
         <ControlPanel macAddress={device.macAddress} />
       </div>

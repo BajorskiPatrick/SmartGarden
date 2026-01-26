@@ -7,4 +7,5 @@ import java.util.UUID;
 
 public interface PlantProfileRepository extends JpaRepository<PlantProfile, UUID> {
     List<PlantProfile> findByUserId(String userId);
+    java.util.Optional<PlantProfile> findByUserIdAndName(String userId, String name);
 }

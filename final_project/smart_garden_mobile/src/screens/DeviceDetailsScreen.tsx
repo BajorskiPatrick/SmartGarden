@@ -195,13 +195,13 @@ export default function DeviceDetailsScreen() {
         return (
             <TouchableOpacity 
                 className={`p-4 rounded-xl shadow-sm border w-[48%] mb-4 ${isError ? 'border-red-300 bg-red-50' : 'border-gray-100 bg-white'}`}
-                onPress={() => navigation.navigate('TelemetryChart' as never, {
+                onPress={() => (navigation.navigate as any)('TelemetryChart', {
                     macAddress: mac,
                     sensorType: sensorType,
                     sensorLabel: label,
                     unit: unit,
                     color: chartColor
-                } as never)}
+                })}
             >
                 <View className="flex-row justify-between">
                     <View className={`w-8 h-8 rounded-full items-center justify-center mb-2 ${baseColor.replace('bg-', 'bg-opacity-20 ')}`}>
@@ -247,6 +247,8 @@ export default function DeviceDetailsScreen() {
                     </Text>
                 </View>
             </View>
+            
+
 
             <ScrollView 
                 className="flex-1 p-6"
@@ -337,6 +339,7 @@ export default function DeviceDetailsScreen() {
                     <Text className="font-bold text-gray-800 mb-4">Manual Controls</Text>
                     
                     {/* Measurement */}
+                    {/* Measurement */}
                     <TouchableOpacity 
                         className={`bg-blue-600 p-4 rounded-xl flex-row items-center justify-center mb-4 ${measureMutation.isPending ? 'opacity-50' : ''}`}
                         onPress={() => measureMutation.mutate()}
@@ -418,30 +421,38 @@ export default function DeviceDetailsScreen() {
                         </TouchableOpacity>
                     </View>
                     <FlatList
-                        data={[...(profiles || []), ...PLANT_PROFILES]}
+                        data={[{ id: 'none', name: '', description: 'No active profile', userId: '' } as PlantProfile, ...(profiles || []), ...PLANT_PROFILES]}
                         keyExtractor={item => item.id!}
                         contentContainerStyle={{ padding: 20 }}
-                        renderItem={({ item }) => (
+                        renderItem={({ item }) => {
+                            const isActive = (n: string) => {
+                                if (n === '' && !device.activeProfileName) return true;
+                                return device.activeProfileName === n;
+                            };
+                            return (
                             <TouchableOpacity 
-                                className={`p-4 mb-3 rounded-xl border ${device.activeProfileName === item.name ? 'bg-green-50 border-green-500' : 'bg-white border-gray-200'}`}
+                                className={`p-4 mb-3 rounded-xl border ${isActive(item.name) ? 'bg-green-50 border-green-500' : 'bg-white border-gray-200'}`}
                                 onPress={() => applyProfileMutation.mutate(item)}
                             >
                                 <View className="flex-row justify-between items-center">
                                     <View className="flex-1">
                                         <Text className={`text-lg font-bold ${device.activeProfileName === item.name ? 'text-green-800' : 'text-gray-800'}`}>
-                                            {item.name}
+                                            {item.name || "No Profile"}
                                         </Text>
                                         <Text className="text-gray-500 text-sm mt-1">{item.description}</Text>
-                                        {/* Show Profile Ranges */}
-                                        <View className="flex-row mt-2 gap-2">
-                                            <Text className="text-xs text-gray-400">🌡️ {item.temp_min}-{item.temp_max}°C</Text>
-                                            <Text className="text-xs text-gray-400">💧 {item.soil_min}-{item.soil_max}%</Text>
-                                        </View>
+                                        {/* Show Profile Ranges (only if not 'None') */}
+                                        {item.name !== '' && (
+                                            <View className="flex-row mt-2 gap-2">
+                                                <Text className="text-xs text-gray-400">🌡️ {item.temp_min}-{item.temp_max}°C</Text>
+                                                <Text className="text-xs text-gray-400">💧 {item.soil_min}-{item.soil_max}%</Text>
+                                            </View>
+                                        )}
                                     </View>
-                                    {device.activeProfileName === item.name && <Sprout color="green" size={20} />}
+                                    {isActive(item.name) && <Sprout color="green" size={20} />}
                                 </View>
                             </TouchableOpacity>
-                        )}
+                            );
+                        }}
                     />
                 </SafeAreaView>
             </Modal>

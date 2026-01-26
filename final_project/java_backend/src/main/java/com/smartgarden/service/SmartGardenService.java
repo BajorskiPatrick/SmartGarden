@@ -306,8 +306,19 @@ public class SmartGardenService {
 
         // 1. Update persisted metadata (Active Profile)
         if (dto.getActiveProfileName() != null) {
-            device.setActiveProfileName(dto.getActiveProfileName());
-            deviceRepository.save(device);
+            if (dto.getActiveProfileName().isEmpty()) {
+                // Clear profile
+                device.setActiveProfileName(null);
+                deviceRepository.save(device);
+                
+                // If clearing profile, also reset ESP settings to factory defaults
+                resetDeviceSettings(mac);
+                return; 
+            } else {
+                // Set profile
+                device.setActiveProfileName(dto.getActiveProfileName());
+                deviceRepository.save(device);
+            }
         }
         
         // 2. Publish to MQTT directly

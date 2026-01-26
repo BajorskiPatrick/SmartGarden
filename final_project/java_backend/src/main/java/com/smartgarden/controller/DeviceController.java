@@ -26,6 +26,7 @@ public class DeviceController {
     private final DeviceRepository deviceRepository;
     private final MeasurementRepository measurementRepository;
     private final AlertRepository alertRepository;
+    private final com.smartgarden.repository.PlantProfileRepository plantProfileRepository;
 
     @GetMapping
     public List<com.smartgarden.dto.DeviceSummaryDto> getAllDevices() {
@@ -34,6 +35,11 @@ public class DeviceController {
 
         return devices.stream().map(device -> {
             com.smartgarden.dto.DeviceSummaryDto dto = new com.smartgarden.dto.DeviceSummaryDto(device);
+            
+            // Dynamic Online Status Calculation
+            // REVERTED: Just use device.isOnline() from DB (which is set to true on telemetry)
+            // dto.setOnline(device.isOnline()); // This is done in constructor already
+            
             // Get latest measurement
             org.springframework.data.domain.Pageable topOne = org.springframework.data.domain.PageRequest.of(0, 1, org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "timestamp"));
             List<Measurement> measurements = measurementRepository.findByDevice_MacAddress(device.getMacAddress(), topOne).getContent();
@@ -52,10 +58,13 @@ public class DeviceController {
     }
 
     @GetMapping("/{mac}")
-    public ResponseEntity<Device> getDevice(@PathVariable String mac) {
+    public ResponseEntity<com.smartgarden.dto.DeviceSummaryDto> getDevice(@PathVariable String mac) {
         String normalizedMac = normalizeMac(mac);
         return deviceRepository.findByMacAddress(normalizedMac)
-                .map(ResponseEntity::ok)
+                .map(device -> {
+                    com.smartgarden.dto.DeviceSummaryDto dto = new com.smartgarden.dto.DeviceSummaryDto(device);
+                    return ResponseEntity.ok(dto);
+                })
                 .orElse(ResponseEntity.notFound().build());
     }
 
